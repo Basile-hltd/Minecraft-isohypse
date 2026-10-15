@@ -1,0 +1,76 @@
+name: Build & Release
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        mc: ["26.1", "26.2", "26.3"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "25"
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "9.2.0"
+
+      - name: Résoudre la dernière API Paper stable pour ${{ matrix.mc }}
+        id: api
+        run: |
+          mc="${{ matrix.mc }}"
+          api=$(curl -fsS https://repo.papermc.io/repository/maven-public/io/papermc/paper/paper-api/maven-metadata.xml \
+            | grep -oE "<version>${mc//./\.}\.[^<]*-stable</version>" \
+            | sed -E 's/<\/?version>//g' | sort -V | tail -1)
+          test -n "$api" || { echo "Aucune API stable pour $mc"; exit 1; }
+          echo "paper-api = $api"
+          echo "api=$api" >> "$GITHUB_OUTPUT"
+
+      - name: Compiler
+        run: gradle build -PmcVersion=${{ matrix.mc }} -PpaperApi=${{ steps.api.outputs.api }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: jar-${{ matrix.mc }}
+          path: build/libs/isohypse-*-minecraft-${{ matrix.mc }}.jar
+          if-no-files-found: error
+
+  release:
+    needs: build
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: jar-*
+          path: jars
+          merge-multiple: true
+
+      - name: Publier la release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version=$(tr -d '[:space:]' < VERSION)
+          tag="v$version"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release upload "$tag" jars/*.jar --clobber
+          else
+            gh release create "$tag" jars/*.jar --target "$GITHUB_SHA" \
+              --title "Isohypse $version" --notes "Isohypse $version pour Minecraft 26.1, 26.2 et 26.3."
+          fi

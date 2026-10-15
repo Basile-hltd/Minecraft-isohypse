@@ -1,0 +1,13 @@
+name: Isohypse
+version: '${version}'
+main: fr.basile.isohypse.IsohypsePlugin
+api-version: '${mcVersion}'
+commands:
+  isohypse:
+    description: Commandes du plugin Isohypse
+    usage: /isohypse version
+    permission: isohypse.admin
+permissions:
+  isohypse.admin:
+    description: Autorise les commandes d'administration d'Isohypse
+    default: op
