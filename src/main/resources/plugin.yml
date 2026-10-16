@@ -2,6 +2,7 @@ name: Isohypse
 version: '${version}'
 main: fr.basile.isohypse.IsohypsePlugin
 api-version: '${mcVersion}'
+load: STARTUP
 commands:
   isohypse:
     description: Commandes du plugin Isohypse

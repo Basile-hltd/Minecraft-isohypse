@@ -3,3 +3,7 @@ build/
 .idea/
 *.iml
 out/
+tmp/
+tools/plugins/
+/heightmap*.png
+/heightmap.bmp
