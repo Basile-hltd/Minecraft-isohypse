@@ -9,7 +9,7 @@
     tmp/server/                  dossier d'exécution du serveur (monde, plugins, logs)
 
 .PARAMETER McVersion
-  Version de Minecraft / Paper ciblée (défaut : 26.1).
+  Version de Minecraft / Paper ciblée (défaut : 26.2).
 
 .PARAMETER Clean
   Supprime tmp/server avant de lancer (repart d'un monde vierge).
@@ -18,7 +18,7 @@
   .\tools\local_run.ps1 -McVersion 26.2
 #>
 param(
-    [string]$McVersion = "26.3",
+    [string]$McVersion = "26.2",
     [string]$Memory = "4G",
     [string]$Player = "Japrisot",
     [int]$MinY = 0,
@@ -139,22 +139,26 @@ if (Test-Path $HeightMap) {
 # Serveur local jetable : l'EULA Mojang est acceptée automatiquement.
 Set-Content (Join-Path $ServerDir "eula.txt") "eula=true"
 
-# Hauteur du monde : datapack qui redéfinit le type de dimension de l'overworld (gabarit 26.3 dans
-# tools/datapack). min_y et hauteur doivent être des multiples de 16, et min_y + hauteur <= 2032.
-if ($MinY % 16 -ne 0 -or $WorldHeight % 16 -ne 0 -or $WorldHeight -lt 16 -or $MinY + $WorldHeight -gt 2032) {
-    throw "MinY et WorldHeight doivent être des multiples de 16, avec MinY + WorldHeight <= 2032."
+# Hauteur du monde (uniquement si -MinY ou -WorldHeight est passé : le monde vanilla n'a plus besoin d'être
+# haut maintenant que le plugin ne génère plus de terrain) : datapack qui redéfinit le type de dimension de
+# l'overworld (gabarit 26.3 dans tools/datapack). min_y et hauteur doivent être des multiples de 16, et
+# min_y + hauteur <= 2032.
+if ($PSBoundParameters.ContainsKey('MinY') -or $PSBoundParameters.ContainsKey('WorldHeight')) {
+    if ($MinY % 16 -ne 0 -or $WorldHeight % 16 -ne 0 -or $WorldHeight -lt 16 -or $MinY + $WorldHeight -gt 2032) {
+        throw "MinY et WorldHeight doivent être des multiples de 16, avec MinY + WorldHeight <= 2032."
+    }
+    $packDir = Join-Path $ServerDir "world\datapacks\isohypse"
+    if ((Test-Path (Join-Path $ServerDir "world\level.dat")) -and -not (Test-Path $packDir)) {
+        throw "Le monde existant n'a pas la hauteur personnalisée : relancer avec -Clean."
+    }
+    New-Item -ItemType Directory -Force (Join-Path $packDir "data\minecraft\dimension_type") | Out-Null
+    Set-Content (Join-Path $packDir "pack.mcmeta") '{"pack":{"description":"Isohypse - hauteur du monde","min_format":121,"max_format":121}}'
+    $dim = Get-Content (Join-Path $PSScriptRoot "datapack\overworld.json") -Raw | ConvertFrom-Json
+    $dim.min_y = $MinY
+    $dim.height = $WorldHeight
+    $dim.logical_height = $WorldHeight
+    $dim | ConvertTo-Json -Depth 20 | Set-Content (Join-Path $packDir "data\minecraft\dimension_type\overworld.json")
 }
-$packDir = Join-Path $ServerDir "world\datapacks\isohypse"
-if ((Test-Path (Join-Path $ServerDir "world\level.dat")) -and -not (Test-Path $packDir)) {
-    throw "Le monde existant n'a pas la hauteur personnalisée : relancer avec -Clean."
-}
-New-Item -ItemType Directory -Force (Join-Path $packDir "data\minecraft\dimension_type") | Out-Null
-Set-Content (Join-Path $packDir "pack.mcmeta") '{"pack":{"description":"Isohypse - hauteur du monde","min_format":121,"max_format":121}}'
-$dim = Get-Content (Join-Path $PSScriptRoot "datapack\overworld.json") -Raw | ConvertFrom-Json
-$dim.min_y = $MinY
-$dim.height = $WorldHeight
-$dim.logical_height = $WorldHeight
-$dim | ConvertTo-Json -Depth 20 | Set-Content (Join-Path $packDir "data\minecraft\dimension_type\overworld.json")
 
 # Whitelist désactivée, spectateur par défaut (server.properties est complété par Paper au 1er lancement).
 $propsFile = Join-Path $ServerDir "server.properties"
@@ -168,8 +172,18 @@ foreach ($key in $props.Keys) {
 }
 Set-Content $propsFile $lines
 
-# Le monde principal utilise le générateur du plugin (le monde existant n'est pas régénéré : -Clean).
-Set-Content (Join-Path $ServerDir "bukkit.yml") "worlds:`n  world:`n    generator: Isohypse"
+# Le plugin n'a plus de générateur de monde : on retire l'ancienne ligne "generator: Isohypse" du bukkit.yml.
+$bukkitFile = Join-Path $ServerDir "bukkit.yml"
+if ((Test-Path $bukkitFile) -and (Select-String -Path $bukkitFile -Pattern "generator: Isohypse" -Quiet)) {
+    Remove-Item $bukkitFile
+}
+
+# Vol rapide / téléportations : plus de "moved too quickly" ni de retour en arrière (serveur local jetable).
+# spigot.yml n'est écrit que s'il n'existe pas ; Spigot complète le reste au premier lancement.
+$spigotFile = Join-Path $ServerDir "spigot.yml"
+if (-not (Test-Path $spigotFile)) {
+    Set-Content $spigotFile "settings:`n  moved-too-quickly-multiplier: 1000.0`n  moved-wrongly-threshold: 1000.0"
+}
 
 # Joueur op (niveau 4) : l'UUID vient de l'API Mojang.
 try {

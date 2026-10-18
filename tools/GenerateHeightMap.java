@@ -25,14 +25,23 @@ import java.util.regex.Pattern;
  *    ou avec --source terrarium. OpenStreetMap ne fournit pas d'altitude.
  *
  * Usage : java tools/GenerateHeightMap.java LAT LON TAILLE [options]
- *   TAILLE                  côté en blocs, multiple de 16 (256 = 16x16 chunks)
- *   --meters-per-block M    mètres réels par bloc (défaut 1)
+ *   TAILLE                  côté de la carte finale en blocs, multiple de 16 (256 = 16x16 chunks)
+ *   --meters-per-block M    mètres réels par bloc (défaut 1) ; la zone couverte fait TAILLE x M mètres
+ *                           de côté, et c'est aussi la taille de la carte de base (1 pixel = 1 m)
  *   --base B                altitude (m) retirée de toutes les valeurs (défaut 0)
  *   --source S              swisstopo (défaut, avec repli terrarium) ou terrarium
  *   --out FICHIER           sortie (défaut heightmap.png) ; écrit aussi FICHIER_human.png,
- *                           aperçu 8 bits au contraste étiré (à regarder, pas à utiliser)
+ *                           aperçu 8 bits au contraste étiré (à regarder, pas à utiliser), et
+ *                           FICHIER_base.png, la carte de base avant échelle (si M != 1)
  *
- * Valeur finale = altitude en mètres - base, bornée à 0-2000. Nord en haut (z négatif).
+ * Deux étapes : (1) carte de base à 1 m par pixel, valeur = altitude en mètres - base, bornée à
+ * 0-4000 ; (2) échelle appliquée à cette carte : réduction par moyenne des pixels, hauteurs divisées
+ * par M pour conserver les proportions (à 2 m par bloc, 4000 m -> 2000). Même zone, moins de blocs.
+ * Biomes : biome.png (valeur 1 à 5) et biome_human.png (couleurs), dans le dossier de --out, d'après
+ * l'altitude réelle de la carte de base puis réduits par vote majoritaire. Limites par défaut (m) :
+ * 1 forêt < 2200 <= 2 arbustes < 2500 <= 3 caillou < 3000 <= 4 neige < 3300 <= 5 glacier
+ * (--biome-limits A,B,C,D pour les changer).
+ * Nord en haut (z négatif).
  */
 public class GenerateHeightMap {
     static final double M_PER_DEG_LAT = 111320.0;
@@ -47,11 +56,12 @@ public class GenerateHeightMap {
         }
         double lat = parse(args[0]);
         double lon = parse(args[1]);
-        int size = Integer.parseInt(args[2]);
+        int outSize = Integer.parseInt(args[2]);
         double scale = 1.0;
         double base = 0;
         String source = "swisstopo";
         File out = new File("heightmap.png");
+        double[] biomeLimits = BIOME_LIMITS.clone();
         for (int i = 3; i < args.length; i += 2) {
             if (i + 1 >= args.length) throw new IllegalArgumentException("Valeur manquante pour " + args[i]);
             switch (args[i]) {
@@ -59,30 +69,37 @@ public class GenerateHeightMap {
                 case "--base" -> base = parse(args[i + 1]);
                 case "--source" -> source = args[i + 1];
                 case "--out" -> out = new File(args[i + 1]);
+                case "--biome-limits" -> {
+                    String[] parts = args[i + 1].split(",");
+                    if (parts.length != 4) throw new IllegalArgumentException("--biome-limits attend 4 altitudes : A,B,C,D");
+                    for (int k = 0; k < 4; k++) biomeLimits[k] = parse(parts[k]);
+                }
                 default -> throw new IllegalArgumentException("Option inconnue : " + args[i]);
             }
         }
-        if (size % 16 != 0 || size <= 0) throw new IllegalArgumentException("La taille doit être un multiple de 16");
+        if (outSize % 16 != 0 || outSize <= 0) throw new IllegalArgumentException("La taille doit être un multiple de 16");
+        if (!(scale > 0)) throw new IllegalArgumentException("--meters-per-block doit être > 0");
+        int size = (int) Math.round(outSize * scale); // côté de la carte de base, en mètres
         if (Math.abs(lat) > 85) throw new IllegalArgumentException("Latitude hors de la couverture (±85°)");
 
+        // Étape 1 : carte de base, toujours à 1 m par pixel, valeur = altitude (m) - base, bornée à 0-4000.
         double cosLat = Math.cos(Math.toRadians(lat));
-        double half = size / 2.0 * scale;
         Swiss swiss = null;
         if (source.equals("swisstopo")) {
-            swiss = new Swiss(lat, lon, half, scale);
+            swiss = new Swiss(lat, lon, size / 2.0, 1.0);
         } else if (!source.equals("terrarium")) {
             throw new IllegalArgumentException("Source inconnue : " + source);
         }
-        Terrarium terrarium = new Terrarium(lat, scale);
+        Terrarium terrarium = new Terrarium(lat, 1.0);
 
-        BufferedImage result = new BufferedImage(size, size, BufferedImage.TYPE_USHORT_GRAY);
-        var raster = result.getRaster();
+        BufferedImage baseMap = new BufferedImage(size, size, BufferedImage.TYPE_USHORT_GRAY);
+        var baseRaster = baseMap.getRaster();
         double min = Double.MAX_VALUE, max = -Double.MAX_VALUE;
         int clamped = 0, fallback = 0;
         for (int j = 0; j < size; j++) {
             for (int i = 0; i < size; i++) {
-                double east = (i - size / 2 + 0.5) * scale;
-                double north = -(j - size / 2 + 0.5) * scale;
+                double east = i - size / 2.0 + 0.5;
+                double north = -(j - size / 2.0 + 0.5);
                 double elevation = swiss == null ? Double.NaN : swiss.elevation(east, north);
                 if (Double.isNaN(elevation)) {
                     if (swiss != null) fallback++;
@@ -92,40 +109,150 @@ public class GenerateHeightMap {
                 min = Math.min(min, elevation);
                 max = Math.max(max, elevation);
                 long value = Math.round(elevation - base);
-                if (value < 0 || value > 2000) clamped++;
-                raster.setSample(i, j, 0, Math.clamp(value, 0, 2000));
+                if (value < 0 || value > 4000) clamped++;
+                baseRaster.setSample(i, j, 0, Math.clamp(value, 0, 4000));
             }
         }
+
+        // Étape 2 : l'échelle est appliquée à la carte de base (réduction par moyenne des pixels couverts,
+        // hauteurs divisées par l'échelle). Échelle 1 : la carte finale est la carte de base.
+        String name = out.getName();
+        String stem = name.endsWith(".png") ? name.substring(0, name.length() - 4) : name;
+        File dir = out.getAbsoluteFile().getParentFile();
+        BufferedImage result = baseMap;
+        if (scale != 1.0) {
+            File baseFile = new File(dir, stem + "_base.png");
+            if (!ImageIO.write(baseMap, "png", baseFile)) throw new IllegalStateException("Écriture PNG impossible");
+            System.out.println(baseFile.getAbsolutePath() + " : carte de base " + size + "x" + size + " (1 m par pixel)");
+            result = downscale(baseMap, outSize, scale);
+        }
+        var raster = result.getRaster();
         if (!ImageIO.write(result, "png", out)) throw new IllegalStateException("Écriture PNG impossible");
-        System.out.printf("%s : altitudes %.1f à %.1f m (base %.1f)%n", out.getAbsolutePath(), min, max, base);
+        System.out.printf("%s : altitudes %.1f à %.1f m (base %.1f), échelle 1 bloc = %.2f m, carte %dx%d blocs, hauteurs %.0f à %.0f blocs%n",
+                out.getAbsolutePath(), min, max, base, scale, outSize, outSize, (min - base) / scale, (max - base) / scale);
 
         // Version lisible : même carte en 8 bits, contraste étiré entre la valeur min et max réelles.
-        String name = out.getName();
-        File human = new File(out.getAbsoluteFile().getParentFile(),
-                (name.endsWith(".png") ? name.substring(0, name.length() - 4) : name) + "_human.png");
+        File human = new File(dir, stem + "_human.png");
         int lo = Integer.MAX_VALUE, hi = 0;
-        for (int j = 0; j < size; j++) {
-            for (int i = 0; i < size; i++) {
+        for (int j = 0; j < outSize; j++) {
+            for (int i = 0; i < outSize; i++) {
                 int v = raster.getSample(i, j, 0);
                 lo = Math.min(lo, v);
                 hi = Math.max(hi, v);
             }
         }
-        BufferedImage preview = new BufferedImage(size, size, BufferedImage.TYPE_BYTE_GRAY);
+        BufferedImage preview = new BufferedImage(outSize, outSize, BufferedImage.TYPE_BYTE_GRAY);
         var previewRaster = preview.getRaster();
-        for (int j = 0; j < size; j++) {
-            for (int i = 0; i < size; i++) {
+        for (int j = 0; j < outSize; j++) {
+            for (int i = 0; i < outSize; i++) {
                 previewRaster.setSample(i, j, 0, Math.round(255f * (raster.getSample(i, j, 0) - lo) / Math.max(1, hi - lo)));
             }
         }
         ImageIO.write(preview, "png", human);
         System.out.println(human.getAbsolutePath() + " : contraste étiré de " + lo + " (noir) à " + hi + " (blanc)");
+
+        // Biomes : calculés sur la carte de base (altitude réelle = valeur + base), puis réduits à la fin
+        // par vote majoritaire (une moyenne n'a pas de sens pour des catégories).
+        var baseIn = baseMap.getRaster();
+        BufferedImage biomeBase = new BufferedImage(size, size, BufferedImage.TYPE_BYTE_GRAY);
+        var biomeBaseRaster = biomeBase.getRaster();
+        for (int j = 0; j < size; j++) {
+            for (int i = 0; i < size; i++) {
+                biomeBaseRaster.setSample(i, j, 0, biomeAt(baseIn.getSample(i, j, 0) + base, biomeLimits));
+            }
+        }
+        BufferedImage biomes = scale != 1.0 ? downscaleBiomes(biomeBase, outSize, scale) : biomeBase;
+        var biomeRaster = biomes.getRaster();
+        File biomeFile = new File(dir, "biome.png");
+        File biomeHuman = new File(dir, "biome_human.png");
+        ImageIO.write(biomes, "png", biomeFile);
+        BufferedImage biomeColors = new BufferedImage(outSize, outSize, BufferedImage.TYPE_INT_RGB);
+        int[] counts = new int[BIOME_COLORS.length + 1];
+        for (int j = 0; j < outSize; j++) {
+            for (int i = 0; i < outSize; i++) {
+                int b = biomeRaster.getSample(i, j, 0);
+                counts[b]++;
+                biomeColors.setRGB(i, j, BIOME_COLORS[b - 1]);
+            }
+        }
+        ImageIO.write(biomeColors, "png", biomeHuman);
+        System.out.println(biomeFile.getAbsolutePath() + " : biomes 1 à 5 (valeur du pixel), " + outSize + "x" + outSize);
+        System.out.println(biomeHuman.getAbsolutePath() + " : aperçu en couleurs");
+        for (int b = 1; b <= BIOME_COLORS.length; b++) {
+            System.out.printf("  %d %-22s %5.1f %%%n", b, BIOME_NAMES[b - 1], 100.0 * counts[b] / ((double) outSize * outSize));
+        }
         if (fallback > 0) {
             System.out.println("Attention : " + fallback + " pixels hors couverture swisstopo, remplacés par Terrarium.");
         }
         if (clamped > 0) {
-            System.out.println("Attention : " + clamped + " pixels hors de 0-2000 ont été bornés (voir --base).");
+            System.out.println("Attention : " + clamped + " pixels hors de 0-4000 ont été bornés (voir --base).");
         }
+    }
+
+    // Biomes selon l'altitude réelle (m), valeurs moyennes approximatives pour la Suisse ; modifiables avec
+    // --biome-limits A,B,C,D : 1 sous A, 2 de A à B, 3 de B à C, 4 de C à D, 5 au-dessus de D.
+    static final double[] BIOME_LIMITS = {2200, 2500, 3000, 3300};
+    static final String[] BIOME_NAMES = {"forêt", "arbustes / prairie alpine", "caillou", "neige", "glacier"};
+    static final int[] BIOME_COLORS = {0x2E8B3A, 0xB5D36A, 0x8A8A8A, 0xFFFFFF, 0x9FD8F0};
+
+    static int biomeAt(double altitude, double[] limits) {
+        int b = 1;
+        while (b <= limits.length && altitude >= limits[b - 1]) b++;
+        return b;
+    }
+
+    /** Réduction d'une carte de biomes : biome majoritaire (pondéré par la surface) de chaque carré. */
+    static BufferedImage downscaleBiomes(BufferedImage biomes, int outSize, double scale) {
+        int size = biomes.getWidth();
+        var in = biomes.getRaster();
+        BufferedImage result = new BufferedImage(outSize, outSize, BufferedImage.TYPE_BYTE_GRAY);
+        var out = result.getRaster();
+        for (int j = 0; j < outSize; j++) {
+            for (int i = 0; i < outSize; i++) {
+                double x0 = i * scale, x1 = Math.min((i + 1) * scale, size);
+                double z0 = j * scale, z1 = Math.min((j + 1) * scale, size);
+                double[] votes = new double[BIOME_COLORS.length + 1];
+                for (int pz = (int) z0; pz < Math.ceil(z1); pz++) {
+                    double wz = Math.min(pz + 1, z1) - Math.max(pz, z0);
+                    for (int px = (int) x0; px < Math.ceil(x1); px++) {
+                        votes[in.getSample(px, pz, 0)] += wz * (Math.min(px + 1, x1) - Math.max(px, x0));
+                    }
+                }
+                int best = 1;
+                for (int b = 2; b < votes.length; b++) if (votes[b] > votes[best]) best = b;
+                out.setSample(i, j, 0, best);
+            }
+        }
+        return result;
+    }
+
+    /**
+     * Réduit la carte de base à {@code outSize} x {@code outSize} : chaque pixel de sortie est la moyenne
+     * (pondérée par la surface couverte) d'un carré de {@code scale} x {@code scale} pixels de la base,
+     * divisée par {@code scale}.
+     */
+    static BufferedImage downscale(BufferedImage base, int outSize, double scale) {
+        int size = base.getWidth();
+        var in = base.getRaster();
+        BufferedImage result = new BufferedImage(outSize, outSize, BufferedImage.TYPE_USHORT_GRAY);
+        var out = result.getRaster();
+        for (int j = 0; j < outSize; j++) {
+            for (int i = 0; i < outSize; i++) {
+                double x0 = i * scale, x1 = Math.min((i + 1) * scale, size);
+                double z0 = j * scale, z1 = Math.min((j + 1) * scale, size);
+                double sum = 0, weight = 0;
+                for (int pz = (int) z0; pz < Math.ceil(z1); pz++) {
+                    double wz = Math.min(pz + 1, z1) - Math.max(pz, z0);
+                    for (int px = (int) x0; px < Math.ceil(x1); px++) {
+                        double w = wz * (Math.min(px + 1, x1) - Math.max(px, x0));
+                        sum += w * in.getSample(px, pz, 0);
+                        weight += w;
+                    }
+                }
+                out.setSample(i, j, 0, Math.clamp(Math.round(sum / weight / scale), 0, 4000));
+            }
+        }
+        return result;
     }
 
     /** Accepte "46.168441," (virgule finale copiée depuis un exemple) et la virgule décimale. */

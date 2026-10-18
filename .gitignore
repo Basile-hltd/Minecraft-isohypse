@@ -7,3 +7,4 @@ tmp/
 tools/plugins/
 /heightmap*.png
 /heightmap.bmp
+/biome*.png

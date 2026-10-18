@@ -1,6 +1,0 @@
-# Lance automatiquement la pré-génération Chunksmith sur toute la height map au démarrage.
-chunksmith:
-  auto-start: true
-  # Unité du paramètre de /cs radius : "blocks" ou "chunks" (non précisé dans la doc Chunksmith,
-  # à vérifier avec /cs status si la zone paraît trop grande ou trop petite).
-  radius-unit: blocks
