@@ -1,0 +1,5 @@
+# Style Realistic : point du monde réel placé au centre du monde (x=0, z=0, le spawn).
+realistic:
+  latitude: 46.168358   # degrés, de -90 (sud) à 90 (nord)
+  longitude: 6.934330   # degrés, de -180 (ouest) à 180 (est)
+  size: 1000          # côté en mètres de la zone réelle récupérée ; la carte finale est mise à l'échelle (voir README)

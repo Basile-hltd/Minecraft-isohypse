@@ -25,7 +25,21 @@ public final class IsohypsePlugin extends JavaPlugin {
 
     @Override
     public void onEnable() {
+        saveDefaultConfig();
         getLogger().info("Isohypse " + getPluginMeta().getVersion() + " enabled");
+        logRealisticCenter();
+    }
+
+    /** Prints the real-world point (latitude, longitude) that the Realistic style puts at x=0, z=0. */
+    private void logRealisticCenter() {
+        double latitude = getConfig().getDouble("realistic.latitude");
+        double longitude = getConfig().getDouble("realistic.longitude");
+        if (latitude < -90 || latitude > 90 || longitude < -180 || longitude > 180) {
+            getLogger().warning("Realistic: invalid center (latitude " + latitude + ", longitude " + longitude
+                    + "), expected latitude in [-90, 90] and longitude in [-180, 180]");
+            return;
+        }
+        getLogger().info("Realistic: world center (0, 0) = latitude " + latitude + ", longitude " + longitude);
     }
 
     /** Called by Bukkit for worlds whose bukkit.yml entry says "generator: Isohypse". */
@@ -33,7 +47,7 @@ public final class IsohypsePlugin extends JavaPlugin {
     public @Nullable ChunkGenerator getDefaultWorldGenerator(String worldName, @Nullable String id) {
         return worldStyle.map(style -> {
             getLogger().info("World '" + worldName + "': " + style.levelType() + " generator");
-            return (ChunkGenerator) new StyleRouterGenerator(style);
+            return (ChunkGenerator) new StyleRouterGenerator(style, this);
         }).orElse(null);
     }
 

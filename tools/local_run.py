@@ -262,6 +262,58 @@ def write_ops(player: str) -> None:
     (SERVER_DIR / "ops.json").write_text(json.dumps(ops, indent=2))
 
 
+def parse_coord(coord: list[str] | None) -> tuple[float | None, float | None]:
+    """Parse "46.168358, 6.934330" (quoted or not, comma and/or space separated) into (latitude, longitude)."""
+    if not coord:
+        return None, None
+    try:
+        latitude, longitude = (float(v) for v in re.split(r"[,\s;]+", " ".join(coord).strip()))
+    except ValueError:
+        sys.exit('--coord expects "latitude, longitude", e.g. --coord 46.168358, 6.934330')
+    if not (-90 <= latitude <= 90 and -180 <= longitude <= 180):
+        sys.exit("--coord: latitude must be in [-90, 90] and longitude in [-180, 180].")
+    return latitude, longitude
+
+
+def write_plugin_config(latitude: float | None, longitude: float | None, size: int | None) -> None:
+    """Set realistic.latitude / longitude / size in plugins/Isohypse/config.yml (created from the plugin's default)."""
+    if latitude is None and longitude is None and size is None:
+        return
+    config = SERVER_DIR / "plugins" / "Isohypse" / "config.yml"
+    if not config.exists():
+        config.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(ROOT / "src" / "main" / "resources" / "config.yml", config)
+    text = config.read_text(encoding="utf-8")
+    for key, value in (("latitude", latitude), ("longitude", longitude), ("size", size)):
+        if value is not None:
+            text = re.sub(rf"^(\s*{key}:)\s*[-\d.]+", lambda m: f"{m.group(1)} {value}", text, flags=re.MULTILINE)
+    config.write_text(text, encoding="utf-8")
+    print(f"Realistic config: latitude {latitude}, longitude {longitude}, size {size} (None = unchanged)")
+
+
+def install_heightmap(path: str | None) -> None:
+    """Copy a height map given with --heightmap into plugins/Isohypse, so that the plugin does not fetch it again.
+
+    A .png is a finished height map (the plugin still checks its scale and adjusts it if needed); anything else is the real-altitude file the plugin wrote as
+    heightmap_source.bin, from which it only redoes the scaling (the old height map is removed so that it does).
+    """
+    if not path:
+        return
+    src = Path(path).expanduser().resolve()
+    if not src.is_file():
+        sys.exit(f"--heightmap: file not found: {src}")
+    dest_dir = SERVER_DIR / "plugins" / "Isohypse"
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    if src.suffix.lower() == ".png":
+        shutil.copy2(src, dest_dir / "heightmap.png")
+        print(f"Height map copied: {src} -> plugins/Isohypse/heightmap.png (the plugin checks its scale)")
+    else:
+        shutil.copy2(src, dest_dir / "heightmap_source.bin")
+        for stale in ("heightmap.png", "heightmap_human.png"):
+            (dest_dir / stale).unlink(missing_ok=True)
+        print(f"Real altitudes copied: {src} -> plugins/Isohypse/heightmap_source.bin (the plugin only rescales)")
+
+
 def load_gamerules() -> dict:
     if not GAMERULES_FILE.exists():
         return {}
@@ -270,7 +322,9 @@ def load_gamerules() -> dict:
 
 def run_server(java: Path, memory: str, paper_jar: Path, gamerules: dict) -> None:
     """Run the server with its console forwarded; apply the gamerules once it is ready."""
-    proc = subprocess.Popen([str(java), f"-Xms{memory}", f"-Xmx{memory}", "-jar", str(paper_jar), "--nogui"],
+    sys.stdout.reconfigure(errors="replace")  # server logs can hold characters the console encoding lacks
+    proc = subprocess.Popen([str(java), f"-Xms{memory}", f"-Xmx{memory}",
+                             "-Dstdout.encoding=UTF-8", "-Dstderr.encoding=UTF-8", "-Dfile.encoding=UTF-8", "-jar", str(paper_jar), "--nogui"],
                             cwd=SERVER_DIR, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                             stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace")
 
@@ -304,6 +358,12 @@ def main() -> None:
     ap.add_argument("--clean", action="store_true", help="delete tmp/server before starting (fresh world)")
     ap.add_argument("--seed", help="world seed (default: random, printed at startup)")
     ap.add_argument("--level-type", help="level-type value for server.properties (e.g. Realistic, Fairy, Vanilla+)")
+    ap.add_argument("--coord", nargs="+", metavar="LAT, LON",
+                    help='Realistic: "latitude, longitude" of the world center (x=0, z=0), e.g. --coord 46.168358, 6.934330')
+    ap.add_argument("--size", type=int, help="Realistic: side of the height map in blocks (default: plugin config, 1000)")
+    ap.add_argument("--heightmap", metavar="PATH",
+                    help="Realistic: height map to copy into the plugin folder (a .png is checked and rescaled if needed; "
+                         "the heightmap_source.bin the plugin wrote is only rescaled), so nothing is fetched again")
     ap.add_argument("--no-eula", action="store_true",
                     help="do not accept the Minecraft EULA (by default eula=true is written to eula.txt)")
     args = ap.parse_args()
@@ -327,6 +387,8 @@ def main() -> None:
     shutil.copy2(plugin_jar, plugins)
 
     install_plugins(plugins, args.mc_version, paper_version)
+    write_plugin_config(*parse_coord(args.coord), args.size)
+    install_heightmap(args.heightmap)
 
     if not args.no_eula:
         (SERVER_DIR / "eula.txt").write_text("eula=true\n")
