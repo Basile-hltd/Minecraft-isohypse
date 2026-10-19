@@ -23,12 +23,14 @@ import shutil
 import subprocess
 import sys
 import tarfile
+import threading
 import time
 import uuid
 import zipfile
 from pathlib import Path
 
 import requests
+import yaml
 
 GRADLE_VERSION = "9.2.0"
 JAVA_VERSION = 25  # must match the toolchain in build.gradle.kts
@@ -78,6 +80,16 @@ def java_major(java: str) -> int:
         return 0
 
 
+def java_home_of(java: str) -> Path | None:
+    """Real java.home of a java executable (the PATH one can be a shim, e.g. Oracle's javapath)."""
+    try:
+        out = subprocess.run([java, "-XshowSettings:properties", "-version"], capture_output=True, text=True).stderr
+    except OSError:
+        return None
+    m = re.search(r"java\.home = (.+)", out)
+    return Path(m.group(1).strip()) if m else None
+
+
 def ensure_java() -> Path:
     """Return JAVA_HOME (system one if recent enough, otherwise a Temurin JDK in tmp/)."""
     env_home = os.environ.get("JAVA_HOME")
@@ -87,7 +99,9 @@ def ensure_java() -> Path:
             return Path(env_home)
     on_path = shutil.which("java")
     if on_path and java_major(on_path) >= JAVA_VERSION:
-        return Path(on_path).resolve().parent.parent
+        home = java_home_of(on_path)
+        if home and (home / "bin").exists():
+            return home
 
     jdk_dir = TMP / f"jdk-{JAVA_VERSION}"
     if not jdk_dir.exists():
@@ -180,6 +194,50 @@ def download_paper(mc_version: str) -> Path:
     return jar
 
 
+# --- Third-party plugins ------------------------------------------------
+PLUGINS_FILE = ROOT / "tools" / "plugins.yml"
+PLUGIN_CACHE = TMP / "plugin-cache"
+GAMERULES_FILE = ROOT / "tools" / "gamerules.yml"
+
+
+def install_plugins(plugins_dir: Path, mc_version: str, paper_version: str) -> None:
+    """Install the plugins listed in tools/plugins.yml (Modrinth slugs) in the version matching Minecraft.
+
+    A plugin with no release for this version is skipped with a warning.
+    """
+    if not PLUGINS_FILE.exists():
+        return
+    slugs = (yaml.safe_load(PLUGINS_FILE.read_text(encoding="utf-8")) or {}).get("plugins") or []
+    versions = list(dict.fromkeys([paper_version, mc_version]))
+    for slug in slugs:
+        try:
+            r = requests.get(f"https://api.modrinth.com/v2/project/{slug}/version", timeout=30,
+                             params={"loaders": json.dumps(["paper"]), "game_versions": json.dumps(versions)})
+            r.raise_for_status()
+            releases = [v for v in r.json() if v["version_type"] == "release"] or r.json()
+        except requests.RequestException as e:
+            print(f"WARNING: plugin '{slug}': Modrinth request failed ({e}).", file=sys.stderr)
+            continue
+        if not releases:
+            print(f"WARNING: plugin '{slug}': no version found for Minecraft {mc_version}, not installed.",
+                  file=sys.stderr)
+            continue
+        file = next((f for f in releases[0]["files"] if f["primary"]), releases[0]["files"][0])
+        jar = PLUGIN_CACHE / file["filename"]
+        if not jar.exists():
+            download(file["url"], jar)
+            if hashlib.sha512(jar.read_bytes()).hexdigest() != file["hashes"]["sha512"].lower():
+                jar.unlink()
+                print(f"WARNING: plugin '{slug}': invalid checksum, not installed.", file=sys.stderr)
+                continue
+        # Replace an older jar of the same plugin (jar names start with the slug).
+        for old in plugins_dir.glob(f"{slug}*.jar"):
+            if old.name != jar.name:
+                old.unlink()
+        shutil.copy2(jar, plugins_dir)
+        print(f"Plugin {slug}: {releases[0]['version_number']}")
+
+
 # --- Serveur ------------------------------------------------------------
 def set_properties(path: Path, props: dict[str, str]) -> None:
     lines = path.read_text().splitlines() if path.exists() else []
@@ -204,6 +262,40 @@ def write_ops(player: str) -> None:
     (SERVER_DIR / "ops.json").write_text(json.dumps(ops, indent=2))
 
 
+def load_gamerules() -> dict:
+    if not GAMERULES_FILE.exists():
+        return {}
+    return (yaml.safe_load(GAMERULES_FILE.read_text(encoding="utf-8")) or {}).get("gamerules") or {}
+
+
+def run_server(java: Path, memory: str, paper_jar: Path, gamerules: dict) -> None:
+    """Run the server with its console forwarded; apply the gamerules once it is ready."""
+    proc = subprocess.Popen([str(java), f"-Xms{memory}", f"-Xmx{memory}", "-jar", str(paper_jar), "--nogui"],
+                            cwd=SERVER_DIR, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                            stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace")
+
+    def send(command: str) -> None:
+        try:
+            proc.stdin.write(command + "\n")
+            proc.stdin.flush()
+        except OSError:
+            pass
+
+    def forward_console() -> None:
+        for line in sys.stdin:
+            send(line.rstrip("\n"))
+
+    threading.Thread(target=forward_console, daemon=True).start()
+    ready = False
+    for line in proc.stdout:
+        print(line, end="", flush=True)
+        if not ready and re.search(r"Done \(.*\)! For help", line):
+            ready = True
+            for rule, value in gamerules.items():
+                send(f"gamerule {rule} {str(value).lower()}")
+    proc.wait()
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--mc-version", default="26.3", help="target Minecraft / Paper version (default: 26.3)")
@@ -222,6 +314,7 @@ def main() -> None:
     gradle = ensure_gradle()
     plugin_jar = build_plugin(gradle, java_home, args.mc_version)
     paper_jar = download_paper(args.mc_version)
+    paper_version = re.match(r"paper-(.+)-\d+\.jar", paper_jar.name).group(1)
 
     if args.clean:
         shutil.rmtree(SERVER_DIR, ignore_errors=True)
@@ -233,9 +326,7 @@ def main() -> None:
         old.unlink()
     shutil.copy2(plugin_jar, plugins)
 
-    # Third-party plugins: any jar placed in tools/plugins is copied into the server.
-    for jar in (ROOT / "tools" / "plugins").glob("*.jar"):
-        shutil.copy2(jar, plugins)
+    install_plugins(plugins, args.mc_version, paper_version)
 
     if not args.no_eula:
         (SERVER_DIR / "eula.txt").write_text("eula=true\n")
@@ -268,8 +359,7 @@ def main() -> None:
     write_ops(args.player)
 
     print("Starting the server (type 'stop' to stop it)...")
-    subprocess.run([str(java), f"-Xms{args.memory}", f"-Xmx{args.memory}", "-jar", str(paper_jar), "--nogui"],
-                   cwd=SERVER_DIR)
+    run_server(java, args.memory, paper_jar, load_gamerules())
 
 
 if __name__ == "__main__":

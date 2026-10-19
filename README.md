@@ -91,9 +91,17 @@ python tools/local_run.py --mc-version 26.3 --level-type Vanilla+ --clean
 | `--player` | Joueur mis op (défaut : `Japrisot`) |
 | `--no-eula` | N'écrit pas `eula=true` : par défaut, le script accepte l'EULA de Minecraft |
 
-Si Java 25, Gradle ou Paper manquent, le script les télécharge dans `tmp/`. Les jars de `tools/plugins/` sont copiés dans le serveur.
+Si Java 25, Gradle ou Paper manquent, le script les télécharge dans `tmp/`. Les plugins listés dans `tools/plugins.yml` sont installés dans le serveur (voir ci-dessous).
 
 Le serveur est préparé pour les tests : liste blanche désactivée, mode spectateur, déplacements rapides tolérés et `online-mode=false`. Ce dernier réglage supprime la vérification du compte Microsoft, ce qui permet au client hors-ligne ci-dessous de se connecter. Le joueur op reçoit son UUID hors-ligne, calculé localement. **Ne pas utiliser ces réglages pour un vrai serveur.**
+
+#### Plugins tiers : `tools/plugins.yml`
+
+Liste de slugs [Modrinth](https://modrinth.com) (par exemple `lod-server-support`). À chaque lancement, `local_run.py` télécharge la version Paper correspondant à `--mc-version` (cache dans `tmp/plugin-cache/`, checksum vérifié) et remplace l'ancien jar du même plugin. Si aucune version n'existe pour cette version de Minecraft, un warning est affiché et le plugin n'est pas installé. Aucun jar n'est stocké dans le dépôt.
+
+#### Gamerules : `tools/gamerules.yml`
+
+Les gamerules listés (par défaut : temps figé, météo figée, pas de mobs) sont envoyés au serveur dès qu'il est prêt, à chaque démarrage. Les noms sont ceux de 26.x (`advance_time`, `spawn_mobs`…). La console du serveur reste utilisable normalement.
 
 ### `tools/download_minecraft.py` : client
 
