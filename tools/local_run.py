@@ -242,6 +242,14 @@ def main() -> None:
     if not spigot.exists():
         spigot.write_text("settings:\n  moved-too-quickly-multiplier: 1000.0\n  moved-wrongly-threshold: 1000.0\n")
 
+    # Tell Bukkit to use the plugin's generator for the overworld when a custom level-type is requested.
+    # bukkit.yml is rewritten (Paper refills the defaults); otherwise a stale generator line is removed.
+    bukkit = SERVER_DIR / "bukkit.yml"
+    if args.level_type:
+        bukkit.write_text("worlds:\n  world:\n    generator: Isohypse\n")
+    elif bukkit.exists() and "generator: Isohypse" in bukkit.read_text():
+        bukkit.unlink()
+
     write_ops(args.player)
 
     print("Starting the server (type 'stop' to stop it)...")
