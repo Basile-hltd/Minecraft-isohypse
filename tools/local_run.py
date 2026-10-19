@@ -22,6 +22,8 @@ import shutil
 import subprocess
 import sys
 import tarfile
+import time
+import uuid
 import zipfile
 from pathlib import Path
 
@@ -41,9 +43,18 @@ def download(url: str, dest: Path) -> None:
     dest.parent.mkdir(parents=True, exist_ok=True)
     with requests.get(url, stream=True, timeout=60) as r:
         r.raise_for_status()
+        total = int(r.headers.get("Content-Length", 0))
+        done, last = 0, 0.0
         with open(dest, "wb") as f:
-            for chunk in r.iter_content(1 << 20):
+            for chunk in r.iter_content(1 << 16):
                 f.write(chunk)
+                done += len(chunk)
+                if time.time() - last > 0.2:
+                    last = time.time()
+                    pct = f" ({100 * done // total}%)" if total else ""
+                    print(f"\r  {done / 1e6:.1f}/{total / 1e6:.1f} MB{pct}" if total else f"\r  {done / 1e6:.1f} MB",
+                          end="", flush=True)
+        print(f"\r  {done / 1e6:.1f} MB downloaded" + " " * 20)
 
 
 def extract(archive: Path, dest: Path) -> None:
@@ -182,18 +193,14 @@ def set_properties(path: Path, props: dict[str, str]) -> None:
     path.write_text("\n".join(lines) + "\n")
 
 
+def offline_uuid(player: str) -> str:
+    """UUID a server in offline mode (online-mode=false) gives to a player: Java's UUID.nameUUIDFromBytes."""
+    return str(uuid.UUID(bytes=hashlib.md5(f"OfflinePlayer:{player}".encode()).digest(), version=3))
+
+
 def write_ops(player: str) -> None:
-    try:
-        r = requests.get(f"https://api.mojang.com/users/profiles/minecraft/{player}", timeout=15)
-        r.raise_for_status()
-        p = r.json()
-        u = p["id"]
-        uuid = f"{u[:8]}-{u[8:12]}-{u[12:16]}-{u[16:20]}-{u[20:]}"
-        ops = [{"uuid": uuid, "name": p["name"], "level": 4, "bypassesPlayerLimit": True}]
-        (SERVER_DIR / "ops.json").write_text(json.dumps(ops, indent=2))
-    except (requests.RequestException, KeyError, ValueError):
-        print(f"UUID of '{player}' not found, they will not be op (use 'op {player}' in the console).",
-              file=sys.stderr)
+    ops = [{"uuid": offline_uuid(player), "name": player, "level": 4, "bypassesPlayerLimit": True}]
+    (SERVER_DIR / "ops.json").write_text(json.dumps(ops, indent=2))
 
 
 def main() -> None:
@@ -231,8 +238,9 @@ def main() -> None:
     if not args.no_eula:
         (SERVER_DIR / "eula.txt").write_text("eula=true\n")
 
-    # Whitelist disabled, spectator by default (Paper fills in server.properties on first launch).
-    props = {"white-list": "false", "enforce-whitelist": "false", "gamemode": "spectator"}
+    # Whitelist disabled, offline mode, spectator by default (Paper fills in server.properties on first launch).
+    props = {"white-list": "false", "enforce-whitelist": "false", "gamemode": "spectator",
+             "online-mode": "false"}  # no account check: lets the offline client of download_minecraft.py --run in
     if args.level_type:
         props["level-type"] = args.level_type
     set_properties(SERVER_DIR / "server.properties", props)
