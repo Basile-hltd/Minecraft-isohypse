@@ -3,24 +3,14 @@ package fr.basile.isohypse;
 import org.bukkit.generator.ChunkGenerator;
 
 /**
- * Debug generator that stops vanilla generation after the "noise" stage: only the terrain shape
- * (stone, water, noise caves, aquifers) is produced. Surface rules, carvers, decorations,
- * structures and mobs are all skipped.
+ * Chunk generator for the "Realistic" level-type, selected by {@link StyleRouterGenerator}.
+ *
+ * <p>For now it only keeps the vanilla "noise" stage (terrain shape: stone, water, noise caves, aquifers); surface rules, carvers, decorations, structures and mobs are skipped. The -specific generation will be written here.
  *
  * <p>No generateXxx method is overridden, so the vanilla code still does the work for every
  * stage whose shouldGenerateXxx returns true.
  */
-public final class TerrainOnlyGenerator extends ChunkGenerator {
-
-    private final WorldStyle style;
-
-    public TerrainOnlyGenerator(WorldStyle style) {
-        this.style = style;
-    }
-
-    public WorldStyle style() {
-        return style;
-    }
+public final class RealisticGenerator extends ChunkGenerator {
 
     @Override
     public boolean shouldGenerateNoise() {

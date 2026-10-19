@@ -18,7 +18,7 @@ Au chargement (`load: STARTUP`), il lit `level-type` dans `server.properties`. T
 
 Toute autre valeur (par exemple `minecraft:normal`) laisse la génération vanilla inchangée.
 
-Quand un style est reconnu et que le monde utilise le générateur `Isohypse`, le plugin installe le `TerrainOnlyGenerator`. Ce générateur laisse Minecraft produire la forme du terrain (pierre, eau, grottes de bruit, aquifères) puis s'arrête. Il saute tout le reste :
+Quand un style est reconnu et que le monde utilise le générateur `Isohypse`, le plugin installe le `StyleRouterGenerator`. Il ne génère rien lui-même : il redirige chaque appel vers le générateur du style (`VanillaPlusGenerator`, `RealisticGenerator` ou `FairyGenerator`). Chacun laisse pour l'instant Minecraft produire la forme du terrain (pierre, eau, grottes de bruit, aquifères) puis s'arrête. Ils sautent tout le reste :
 
 - les règles de surface (herbe, sable, terre…) ;
 - les carvers (ravins, grottes classiques) ;
@@ -26,7 +26,7 @@ Quand un style est reconnu et que le monde utilise le générateur `Isohypse`, l
 - les structures ;
 - les mobs à la génération.
 
-Le résultat est un monde de pierre pure, qui montre le relief produit par le bruit de Minecraft. Pour l'instant, les trois styles utilisent ce même générateur.
+Le résultat est un monde de pierre pure, qui montre le relief produit par le bruit de Minecraft. Pour l'instant, les trois générateurs se comportent pareil ; chacun a sa classe pour évoluer séparément.
 
 ### Utilisation sur un serveur
 

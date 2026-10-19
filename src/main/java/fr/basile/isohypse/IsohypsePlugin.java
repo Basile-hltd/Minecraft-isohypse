@@ -32,8 +32,8 @@ public final class IsohypsePlugin extends JavaPlugin {
     @Override
     public @Nullable ChunkGenerator getDefaultWorldGenerator(String worldName, @Nullable String id) {
         return worldStyle.map(style -> {
-            getLogger().info("World '" + worldName + "': terrain-only generation (" + style.levelType() + ")");
-            return (ChunkGenerator) new TerrainOnlyGenerator(style);
+            getLogger().info("World '" + worldName + "': " + style.levelType() + " generator");
+            return (ChunkGenerator) new StyleRouterGenerator(style);
         }).orElse(null);
     }
 
