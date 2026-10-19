@@ -10,13 +10,14 @@ Everything is created in tmp/ at the repo root (ignored by git):
 Usage :
     python -m venv .venv && source .venv/bin/activate    (Windows : .venv\\Scripts\\activate)
     pip install -r tools/requirements.txt
-    python tools/local_run.py --mc-version 26.2 [--clean] [--no-eula]
+    python tools/local_run.py --mc-version 26.2 [--seed 1234] [--clean] [--no-eula]
 """
 import argparse
 import hashlib
 import json
 import os
 import platform
+import random
 import re
 import shutil
 import subprocess
@@ -209,6 +210,7 @@ def main() -> None:
     ap.add_argument("--memory", default="4G", help="server memory (default: 4G)")
     ap.add_argument("--player", default="Japrisot", help="player to make op")
     ap.add_argument("--clean", action="store_true", help="delete tmp/server before starting (fresh world)")
+    ap.add_argument("--seed", help="world seed (default: random, printed at startup)")
     ap.add_argument("--level-type", help="level-type value for server.properties (e.g. Realistic, Fairy, Vanilla+)")
     ap.add_argument("--no-eula", action="store_true",
                     help="do not accept the Minecraft EULA (by default eula=true is written to eula.txt)")
@@ -243,7 +245,12 @@ def main() -> None:
              "online-mode": "false"}  # no account check: lets the offline client of download_minecraft.py --run in
     if args.level_type:
         props["level-type"] = args.level_type
+    seed = args.seed if args.seed is not None else str(random.randint(-2**63, 2**63 - 1))
+    props["level-seed"] = seed
     set_properties(SERVER_DIR / "server.properties", props)
+    print(f"World seed: {seed}")
+    if (SERVER_DIR / "world" / "level.dat").exists():
+        print("A world already exists: the seed only applies to a new world (use --clean).")
 
     # Fast flight / teleports: no more "moved too quickly" (throwaway local server).
     spigot = SERVER_DIR / "spigot.yml"

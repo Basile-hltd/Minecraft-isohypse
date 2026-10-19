@@ -85,6 +85,7 @@ python tools/local_run.py --mc-version 26.3 --level-type Vanilla+ --clean
 |--------|------|
 | `--mc-version` | Version de Minecraft / Paper (défaut : `26.3`) |
 | `--level-type` | Valeur de `level-type`, par exemple `Vanilla+`, `Realistic` ou `Fairy`. Écrit aussi l'entrée `generator: Isohypse` dans `bukkit.yml` |
+| `--seed` | Seed du monde (défaut : aléatoire, affichée au démarrage). Ne s'applique qu'à un nouveau monde : à combiner avec `--clean` |
 | `--clean` | Supprime `tmp/server` avant de démarrer (monde neuf) |
 | `--memory` | Mémoire du serveur (défaut : `4G`) |
 | `--player` | Joueur mis op (défaut : `Japrisot`) |
