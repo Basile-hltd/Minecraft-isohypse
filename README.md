@@ -26,7 +26,7 @@ Quand un style est reconnu et que le monde utilise le générateur `Isohypse`, l
 - les structures ;
 - les mobs à la génération.
 
-Le résultat est un monde de pierre pure, qui montre le relief produit par le bruit de Minecraft. Pour l'instant, les trois générateurs se comportent pareil ; chacun a sa classe pour évoluer séparément.
+Le résultat est un monde de pierre pure, qui montre le relief produit par le bruit de Minecraft. Pour l'instant, `Vanilla+` et `Fairy` se comportent pareil. `Realistic` remplace le bruit vanilla par sa propre forme : une sinusoïde sur l'axe X (amplitude 32 blocs, longueur d'onde 64 blocs, autour de y=64), remplie de pierre, avec de l'eau jusqu'au niveau de la mer vanilla (y=63) dans les creux et des grottes qui imitent celles de Minecraft (voir `CaveNoise`) : poches cheese, tunnels spaghetti et noodle. Elles s'arrêtent 8 blocs sous la surface, un lissage retire les blocs isolés et les aspérités des parois. Elles sont remplies de lave sous y=-54, et d'eau près du fond des océans.
 
 ### Utilisation sur un serveur
 
