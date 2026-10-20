@@ -82,11 +82,6 @@ public final class StyleRouterGenerator extends ChunkGenerator {
     }
 
     @Override
-    public boolean isParallelCapable() {
-        return delegate.isParallelCapable();
-    }
-
-    @Override
     public boolean shouldGenerateNoise() {
         return delegate.shouldGenerateNoise();
     }
@@ -104,11 +99,6 @@ public final class StyleRouterGenerator extends ChunkGenerator {
     @Override
     public boolean shouldGenerateSurface(WorldInfo worldInfo, Random random, int chunkX, int chunkZ) {
         return delegate.shouldGenerateSurface(worldInfo, random, chunkX, chunkZ);
-    }
-
-    @Override
-    public boolean shouldGenerateBedrock() {
-        return delegate.shouldGenerateBedrock();
     }
 
     @Override

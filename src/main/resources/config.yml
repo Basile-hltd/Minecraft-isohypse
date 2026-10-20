@@ -3,3 +3,10 @@ realistic:
   latitude: 46.168358   # degrés, de -90 (sud) à 90 (nord)
   longitude: 6.934330   # degrés, de -180 (ouest) à 180 (est)
   size: 1000          # côté en mètres de la zone réelle récupérée ; la carte finale est mise à l'échelle (voir README)
+  blend_width: 200    # blocs : demi-largeur de la bande lissée de chaque côté d'un raccord entre deux copies de la carte (0 = pas de lissage)
+
+# Monde : hauteur maximale de l'overworld (le sol reste à y=-64). Arrondie à la valeur la plus proche acceptée par le jeu :
+# un multiple de 16 de 128 à 2032 ; 320 est la valeur de Minecraft (rien n'est changé). Ne s'applique qu'à un monde qui
+# n'existe pas encore : le plugin écrit un datapack au lancement du serveur.
+world:
+  max_height: 320

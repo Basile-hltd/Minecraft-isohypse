@@ -275,20 +275,21 @@ def parse_coord(coord: list[str] | None) -> tuple[float | None, float | None]:
     return latitude, longitude
 
 
-def write_plugin_config(latitude: float | None, longitude: float | None, size: int | None) -> None:
-    """Set realistic.latitude / longitude / size in plugins/Isohypse/config.yml (created from the plugin's default)."""
-    if latitude is None and longitude is None and size is None:
+def write_plugin_config(latitude: float | None, longitude: float | None, size: int | None, max_height: int | None) -> None:
+    """Set realistic.latitude / longitude / size and world.max_height in plugins/Isohypse/config.yml (created from the plugin's default)."""
+    if latitude is None and longitude is None and size is None and max_height is None:
         return
     config = SERVER_DIR / "plugins" / "Isohypse" / "config.yml"
     if not config.exists():
         config.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(ROOT / "src" / "main" / "resources" / "config.yml", config)
     text = config.read_text(encoding="utf-8")
-    for key, value in (("latitude", latitude), ("longitude", longitude), ("size", size)):
+    for key, value in (("latitude", latitude), ("longitude", longitude), ("size", size), ("max_height", max_height)):
         if value is not None:
             text = re.sub(rf"^(\s*{key}:)\s*[-\d.]+", lambda m: f"{m.group(1)} {value}", text, flags=re.MULTILINE)
     config.write_text(text, encoding="utf-8")
-    print(f"Realistic config: latitude {latitude}, longitude {longitude}, size {size} (None = unchanged)")
+    print(f"Plugin config: latitude {latitude}, longitude {longitude}, size {size}, max height {max_height} (None = unchanged; "
+          "the plugin rounds the max height to the closest valid one)")
 
 
 def install_heightmap(path: str | None) -> None:
@@ -309,7 +310,7 @@ def install_heightmap(path: str | None) -> None:
         print(f"Height map copied: {src} -> plugins/Isohypse/heightmap.png (the plugin checks its scale)")
     else:
         shutil.copy2(src, dest_dir / "heightmap_source.bin")
-        for stale in ("heightmap.png", "heightmap_human.png"):
+        for stale in ("heightmap.png", "heightmap_human.png", "map.png", "cave_map.png", "temp_map.png"):
             (dest_dir / stale).unlink(missing_ok=True)
         print(f"Real altitudes copied: {src} -> plugins/Isohypse/heightmap_source.bin (the plugin only rescales)")
 
@@ -323,7 +324,7 @@ def load_gamerules() -> dict:
 def run_server(java: Path, memory: str, paper_jar: Path, gamerules: dict) -> None:
     """Run the server with its console forwarded; apply the gamerules once it is ready."""
     sys.stdout.reconfigure(errors="replace")  # server logs can hold characters the console encoding lacks
-    proc = subprocess.Popen([str(java), f"-Xms{memory}", f"-Xmx{memory}",
+    proc = subprocess.Popen([str(java), f"-Xms{memory}", f"-Xmx{memory}", "-Disohypse.maxFlySpeed=true",  # max fly speed on join
                              "-Dstdout.encoding=UTF-8", "-Dstderr.encoding=UTF-8", "-Dfile.encoding=UTF-8", "-jar", str(paper_jar), "--nogui"],
                             cwd=SERVER_DIR, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                             stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace")
@@ -361,6 +362,9 @@ def main() -> None:
     ap.add_argument("--coord", nargs="+", metavar="LAT, LON",
                     help='Realistic: "latitude, longitude" of the world center (x=0, z=0), e.g. --coord 46.168358, 6.934330')
     ap.add_argument("--size", type=int, help="Realistic: side of the height map in blocks (default: plugin config, 1000)")
+    ap.add_argument("--max-height", type=int,
+                    help="maximum height of the overworld (default: plugin config, 320 = vanilla); the plugin rounds it to "
+                         "the closest height the game accepts and adds the datapack at launch; needs --clean for an existing world")
     ap.add_argument("--heightmap", metavar="PATH",
                     help="Realistic: height map to copy into the plugin folder (a .png is checked and rescaled if needed; "
                          "the heightmap_source.bin the plugin wrote is only rescaled), so nothing is fetched again")
@@ -387,7 +391,7 @@ def main() -> None:
     shutil.copy2(plugin_jar, plugins)
 
     install_plugins(plugins, args.mc_version, paper_version)
-    write_plugin_config(*parse_coord(args.coord), args.size)
+    write_plugin_config(*parse_coord(args.coord), args.size, args.max_height)
     install_heightmap(args.heightmap)
 
     if not args.no_eula:

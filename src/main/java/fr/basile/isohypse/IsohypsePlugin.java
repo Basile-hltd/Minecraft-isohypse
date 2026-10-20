@@ -2,6 +2,11 @@ package fr.basile.isohypse;
 
 import org.bukkit.command.Command;
 import org.bukkit.command.CommandSender;
+import org.bukkit.event.EventHandler;
+import org.bukkit.event.Listener;
+import org.bukkit.event.player.PlayerJoinEvent;
+import org.bukkit.permissions.Permission;
+import org.bukkit.permissions.PermissionDefault;
 import org.bukkit.generator.ChunkGenerator;
 import org.bukkit.plugin.java.JavaPlugin;
 import org.jetbrains.annotations.Nullable;
@@ -10,10 +15,11 @@ import java.io.IOException;
 import java.io.Reader;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.List;
 import java.util.Optional;
 import java.util.Properties;
 
-public final class IsohypsePlugin extends JavaPlugin {
+public final class IsohypsePlugin extends JavaPlugin implements Listener {
 
     private Optional<WorldStyle> worldStyle = Optional.empty();
 
@@ -26,8 +32,18 @@ public final class IsohypsePlugin extends JavaPlugin {
     @Override
     public void onEnable() {
         saveDefaultConfig();
+        registerCommand();
         getLogger().info("Isohypse " + getPluginMeta().getVersion() + " enabled");
         logRealisticCenter();
+        // Test servers only: tools/local_run.py starts the JVM with -Disohypse.maxFlySpeed=true.
+        if (Boolean.getBoolean("isohypse.maxFlySpeed")) {
+            getServer().getPluginManager().registerEvents(this, this);
+        }
+    }
+
+    @EventHandler
+    public void onJoin(PlayerJoinEvent event) {
+        event.getPlayer().setFlySpeed(1.0f); // Bukkit's maximum, also applies to spectator flight
     }
 
     /** Prints the real-world point (latitude, longitude) that the Realistic style puts at x=0, z=0. */
@@ -71,12 +87,26 @@ public final class IsohypsePlugin extends JavaPlugin {
         return style;
     }
 
-    @Override
-    public boolean onCommand(CommandSender sender, Command command, String label, String[] args) {
-        if (args.length == 1 && args[0].equalsIgnoreCase("version")) {
-            sender.sendMessage("isohypse " + getPluginMeta().getVersion());
-            return true;
+    /** /isohypse version, for the operators (isohypse.admin); registered here because a paper-plugin.yml has no commands. */
+    private void registerCommand() {
+        try {
+            getServer().getPluginManager().addPermission(new Permission("isohypse.admin",
+                    "Allows Isohypse administration commands", PermissionDefault.OP));
+        } catch (IllegalArgumentException alreadyThere) {
+            // reloaded: the permission is already registered
         }
-        return false; // shows the "usage" from plugin.yml
+        Command command = new Command("isohypse", "Isohypse plugin commands", "/isohypse version", List.of()) {
+            @Override
+            public boolean execute(CommandSender sender, String label, String[] args) {
+                if (args.length == 1 && args[0].equalsIgnoreCase("version")) {
+                    sender.sendMessage("isohypse " + getPluginMeta().getVersion());
+                    return true;
+                }
+                sender.sendMessage(getUsage());
+                return true;
+            }
+        };
+        command.setPermission("isohypse.admin");
+        getServer().getCommandMap().register("isohypse", command);
     }
 }

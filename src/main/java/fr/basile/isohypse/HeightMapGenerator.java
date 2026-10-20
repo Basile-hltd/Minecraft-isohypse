@@ -26,7 +26,7 @@ import java.util.regex.Pattern;
 
 /**
  * Generates a height map (16-bit PNG, 1 pixel = 1 block, value = Y level in blocks) of the area around a GPS point,
- * which becomes the centre of the map, plus a readable 8-bit preview (_human.png).
+ * which becomes the centre of the map, plus the readable biome map (map.png).
  *
  * <p>The real altitudes of a {@code size} x {@code size} metre area (1 pixel = 1 m) are fetched, then the whole map
  * is scaled by one factor, the same in x, z and height, so that the lowest point lands on {@code bottomY} and the
@@ -40,29 +40,52 @@ public final class HeightMapGenerator {
 
     private static final double M_PER_DEG_LAT = 111320.0;
     /** The real altitudes of the area (before scaling), kept next to the height map so that only the scaling is redone. */
+    /** The readable map: biomes in colour, plus a glossary. */
+    public static final String MAP_FILE = "map.png";
+    /** The cave biomes, at two depths. */
+    public static final String CAVE_MAP_FILE = "cave_map.png";
+    /** The intermediate map: zones from the altitude alone, no biome. */
+    public static final String TEMP_MAP_FILE = "temp_map.png";
+    /** The readable altitude only: land in grey, sea in blue. */
+    public static final String HUMAN_FILE = "heightmap_human.png";
     public static final String SOURCE_FILE = "heightmap_source.bin";
     private static final int SOURCE_MAGIC = 0x49534F48;
     /** Most samples per side of the real area: a bigger area is sampled every few metres instead of every metre. */
     private static final int MAX_SAMPLES = 4096;
     /** swissALTI3D (0.5 m, then 2 m tiles) is only used up to this sampling step (m); beyond, Terrarium is lighter. */
     private static final int MAX_SWISS_STEP = 4;
-    /** Largest side (in blocks) of the final map, so that a nearly flat area is not magnified without limit. */
-    private static final int MAX_SIDE = 8192;
+    /** Largest side (in blocks) of the final map: a bigger one keeps its scale and is cut at its edges, around its centre. */
+    private static final int MAX_SIDE = 10000;
+    /** The share of the map that is sea (a column under S - 3): the scale is adjusted until it is between these two. */
+    private static final double SEA_SHARE_MIN = 0.12;
+    private static final double SEA_SHARE_MAX = 0.22;
+    /** The share aimed at (the middle of the window) when the scale has to be adjusted. */
+    private static final double SEA_SHARE_TARGET = 0.17;
+    /** The most tries of the search for the altitude of the shore. */
+    private static final int SEA_FIT_TRIES = 40;
     private static final HttpClient HTTP = HttpClient.newBuilder().followRedirects(HttpClient.Redirect.NORMAL).build();
 
     private final Logger logger;
     private final Path cache;
     private final int seaLevel;
+    private final long seed;
+    private final int blendWidth;
 
-    /** @param seaLevel Y of the sea, shown in blue (darker when deeper) in the readable preview */
-    public HeightMapGenerator(Logger logger, Path cacheDir, int seaLevel) {
+    /**
+     * @param seaLevel Y of the sea, where the beaches start in the readable preview
+     * @param seed world seed, which the biome noises of the readable preview are drawn from
+     * @param blendWidth half width of the band smoothed along the seams of the 3x3 block (see {@link HeightMapData})
+     */
+    public HeightMapGenerator(Logger logger, Path cacheDir, int seaLevel, long seed, int blendWidth) {
         this.logger = logger;
         this.cache = cacheDir;
         this.seaLevel = seaLevel;
+        this.seed = seed;
+        this.blendWidth = blendWidth;
     }
 
     /**
-     * Writes {@code out} (16-bit height map, value = Y level) and its {@code _human.png} preview.
+     * Writes {@code out} (16-bit height map, value = Y level) and the {@code map.png} biome map.
      *
      * <p>The real altitudes come from {@code heightmap_source.bin} next to {@code out} when it exists (only the
      * scaling is then done, nothing is downloaded), otherwise they are fetched and that file is written first.
@@ -171,6 +194,86 @@ public final class HeightMapGenerator {
         }
     }
 
+    /**
+     * A scale of the map: the altitude {@code anchor} (in the unit of the data) is put at the shore (S - 3), the
+     * highest point at the ceiling, with one factor {@code scale} (blocks per unit) in x, z and height; and the share
+     * of the final map that is sea with it.
+     */
+    private record SeaFit(double anchor, double scale, double share) {}
+
+    /**
+     * Looks for the scale that makes the sea a share of the map between {@link #SEA_SHARE_MIN} and
+     * {@link #SEA_SHARE_MAX} (17 % aimed at). The scale first tried is the one that fills the whole range of heights (the
+     * lowest point at {@code bottomY}, the highest at {@code topY}); if the sea is out of the range, the altitude that
+     * lies at the shore is moved by bisection (higher for more sea, lower for less), every time with the highest point
+     * at the ceiling, until the share is right, or the tries run out and the best one is kept.
+     *
+     * <p>The share is counted on the part of the data that the final map keeps: a map over {@link #MAX_SIDE} blocks is cut
+     * at its edges, which depends on the scale.
+     *
+     * @param data the altitudes of a grid of {@code width x height} samples, {@code metersPerSample} metres apart
+     * @param initial the altitude put at the shore by the scale that fills the range
+     */
+    private SeaFit fitSea(float[] data, int width, int height, double metersPerSample, double min, double max, int topY,
+                          double initial) {
+        int shore = TempLayout.beachStart(seaLevel);
+        if (max - min < 1) { // flat: nothing to fit
+            return new SeaFit(initial, 1, seaShare(data, width, height, metersPerSample, initial, 1));
+        }
+        SeaFit best = tried(data, width, height, metersPerSample, max, shore, topY, initial);
+        if (best.share >= SEA_SHARE_MIN && best.share <= SEA_SHARE_MAX) {
+            return best;
+        }
+        double low = min;
+        double high = max - 0.001 * (max - min);
+        for (int i = 0; i < SEA_FIT_TRIES; i++) {
+            double anchor = (low + high) / 2;
+            SeaFit fit = tried(data, width, height, metersPerSample, max, shore, topY, anchor);
+            if (Math.abs(fit.share - SEA_SHARE_TARGET) < Math.abs(best.share - SEA_SHARE_TARGET)) {
+                best = fit;
+            }
+            if (fit.share >= SEA_SHARE_MIN && fit.share <= SEA_SHARE_MAX) {
+                return fit;
+            }
+            if (fit.share < SEA_SHARE_TARGET) {
+                low = anchor; // not enough sea: a higher altitude at the shore
+            } else {
+                high = anchor;
+            }
+        }
+        return best;
+    }
+
+    /** The scale that puts {@code anchor} at the shore and {@code max} at the ceiling, and its share of sea. */
+    private SeaFit tried(float[] data, int width, int height, double metersPerSample, double max, int shore, int topY,
+                         double anchor) {
+        double scale = (topY - shore) / (max - anchor); // blocks per metre
+        return new SeaFit(anchor, scale, seaShare(data, width, height, metersPerSample, anchor, scale));
+    }
+
+    /**
+     * The share of the final map that is sea (an altitude lower than {@code anchor}, which is at the shore), counted
+     * on the samples of the part of the grid that the map keeps, for a scale of {@code scale} blocks per metre.
+     */
+    private static double seaShare(float[] data, int width, int height, double metersPerSample, double anchor, double scale) {
+        int fullWidth = Math.max(1, (int) Math.round(width * metersPerSample * scale));
+        int fullHeight = Math.max(1, (int) Math.round(height * metersPerSample * scale));
+        int keptWidth = (int) Math.max(1, Math.round((double) width * Math.min(fullWidth, MAX_SIDE) / fullWidth));
+        int keptHeight = (int) Math.max(1, Math.round((double) height * Math.min(fullHeight, MAX_SIDE) / fullHeight));
+        int fromX = (width - keptWidth) / 2;
+        int fromZ = (height - keptHeight) / 2;
+        long sea = java.util.stream.IntStream.range(fromZ, fromZ + keptHeight).parallel().mapToLong(row -> {
+            long count = 0;
+            for (int column = fromX; column < fromX + keptWidth; column++) {
+                if (data[row * width + column] < anchor) {
+                    count++;
+                }
+            }
+            return count;
+        }).sum();
+        return (double) sea / ((long) keptWidth * keptHeight);
+    }
+
     /** Step 2: one scale for x, z and height, so that [min, max] fits [bottomY, topY]; writes the PNGs. */
     private void scaleAndWrite(Source source, File out, int bottomY, int topY) throws IOException {
         float[] altitude = source.altitude;
@@ -178,13 +281,14 @@ public final class HeightMapGenerator {
         double min = source.min;
         double max = source.max;
         double areaM = (double) n * source.r;
-        double scale = max - min < 1 ? 1 : (topY - bottomY) / (max - min); // blocks per metre
-        boolean capped = areaM * scale > MAX_SIDE;
-        if (capped) {
-            scale = MAX_SIDE / areaM;
-        }
-        int outSize = Math.max(1, (int) Math.round(areaM * scale));
-        double step = (double) n / outSize; // samples per block along x and z
+        int shore = TempLayout.beachStart(seaLevel);
+        double fillScale = max - min < 1 ? 1 : (topY - bottomY) / (max - min); // blocks per metre that fill the range
+        SeaFit fit = fitSea(altitude, n, n, source.r, min, max, topY, min + (shore - bottomY) / fillScale);
+        double scale = fit.scale; // blocks per metre, the same in x, z and height
+        int fullSize = Math.max(1, (int) Math.round(areaM * scale));
+        int outSize = Math.min(fullSize, MAX_SIDE); // a bigger map keeps its scale and is cut at the edges
+        int offset = (fullSize - outSize) / 2;
+        double step = (double) n / fullSize; // samples per block along x and z
 
         BufferedImage map = new BufferedImage(outSize, outSize, BufferedImage.TYPE_USHORT_GRAY);
         var raster = map.getRaster();
@@ -192,8 +296,8 @@ public final class HeightMapGenerator {
         int highest = Integer.MIN_VALUE;
         for (int j = 0; j < outSize; j++) {
             for (int i = 0; i < outSize; i++) {
-                double meters = sample(altitude, n, n, (i + 0.5) * step, (j + 0.5) * step, step, step);
-                long y = Math.round(bottomY + (meters - min) * scale);
+                double meters = sample(altitude, n, n, (i + offset + 0.5) * step, (j + offset + 0.5) * step, step, step);
+                long y = Math.round(shore + (meters - fit.anchor) * scale);
                 int value = (int) Math.clamp(y, 0, 65535);
                 lowest = Math.min(lowest, value);
                 highest = Math.max(highest, value);
@@ -208,16 +312,18 @@ public final class HeightMapGenerator {
                         + "zone %dx%d m, carte %dx%d blocs, hauteurs %d à %d blocs (prévu %d à %d)",
                 out.getAbsolutePath(), min, max, scale, (int) areaM, (int) areaM, outSize, outSize, lowest, highest,
                 bottomY, topY));
+        logger.info(String.format(Locale.ROOT, "Mer : %.1f %% de la carte (sous y=%d), l'altitude %.1f m est mise au bord de la mer",
+                100 * fit.share, shore, fit.anchor));
+        if (fullSize > outSize) {
+            logger.warning("Attention : la carte ferait " + fullSize + " blocs de côté, elle est rognée à " + outSize
+                    + " (les bords sont coupés, l'échelle est gardée), les hauteurs extrêmes peuvent être coupées.");
+        }
 
-        writeHuman(map, out);
+        writeMap(map, out);
 
         if (source.fallback > 0) {
             logger.warning("Attention : " + source.fallback
                     + " pixels hors couverture swisstopo, remplacés par Terrarium.");
-        }
-        if (capped) {
-            logger.warning("Attention : relief trop plat, la carte est limitée à " + MAX_SIDE
-                    + " blocs de côté, la hauteur ne remplit pas tout le monde.");
         }
     }
 
@@ -258,16 +364,14 @@ public final class HeightMapGenerator {
     }
 
     /**
-     * Writes the readable preview next to {@code out}: land in grey, contrast stretched between the sea level and the
-     * highest point; the sea (columns lower than the sea level) in blue, from light (shallow) to dark (deep).
+     * Writes {@code heightmap_human.png} next to {@code out}: the altitude only, no biome, for the whole 3x3 block. Land in grey, contrast
+     * stretched between the sea level and the highest point; the sea (columns lower than the sea level) in blue, from
+     * light (shallow) to dark (deep).
      */
-    private void writeHuman(BufferedImage map, File out) throws IOException {
-        File dir = out.getAbsoluteFile().getParentFile();
-        String name = out.getName();
-        String stem = name.endsWith(".png") ? name.substring(0, name.length() - 4) : name;
-        var raster = map.getRaster();
-        int width = map.getWidth();
-        int height = map.getHeight();
+    private void writeHuman(BufferedImage heightMap, File out, HeightMapData data) throws IOException {
+        var raster = heightMap.getRaster();
+        int width = heightMap.getWidth();
+        int height = heightMap.getHeight();
         int lowest = Integer.MAX_VALUE;
         int highest = Integer.MIN_VALUE;
         for (int j = 0; j < height; j++) {
@@ -279,10 +383,13 @@ public final class HeightMapGenerator {
         }
         int landLow = Math.min(Math.max(lowest, seaLevel), highest); // grey scale starts at the sea level
         int maxDepth = Math.max(1, seaLevel - lowest);
-        BufferedImage preview = new BufferedImage(width, height, BufferedImage.TYPE_INT_RGB);
-        for (int j = 0; j < height; j++) {
-            for (int i = 0; i < width; i++) {
-                int v = raster.getSample(i, j, 0);
+        // The whole 3x3 block (the map and its eight rotated copies), sampled every few blocks if it is huge.
+        int tiles = data.tilesPerSide();
+        int step = 1; // one pixel per block
+        BufferedImage preview = new BufferedImage(tiles * width / step, tiles * height / step, BufferedImage.TYPE_INT_RGB);
+        for (int j = 0; j < preview.getHeight(); j++) {
+            for (int i = 0; i < preview.getWidth(); i++) {
+                int v = data.heightAt(i * step - (tiles / 2) * width - width / 2, j * step - (tiles / 2) * height - height / 2);
                 int rgb;
                 if (v < seaLevel) {
                     double depth = (double) (seaLevel - v) / maxDepth; // 0 shallow, 1 deepest
@@ -294,7 +401,7 @@ public final class HeightMapGenerator {
                 preview.setRGB(i, j, rgb);
             }
         }
-        File human = new File(dir, stem + "_human.png");
+        File human = new File(out.getAbsoluteFile().getParentFile(), HUMAN_FILE);
         ImageIO.write(preview, "png", human);
         logger.info(human.getAbsolutePath() + " : terre en gris, contraste étiré de " + landLow + " (noir) à " + highest
                 + " (blanc) ; mer en bleu sous le niveau " + seaLevel + ", de clair à foncé jusqu'à "
@@ -306,8 +413,29 @@ public final class HeightMapGenerator {
     }
 
     /**
-     * Checks an existing height map against the wanted heights and rescales it if needed, then rewrites its
-     * {@code _human.png}. The exact real altitudes ({@code heightmap_source.bin}) are used when present; otherwise the
+     * Writes {@code map.png} next to {@code out}: the biome of every column of the 3x3 block (the height map and its
+     * eight rotated copies) with a glossary on the side (see {@link MapRenderer}).
+     */
+    private void writeMap(BufferedImage heightMap, File out) throws IOException {
+        HeightMapData data = HeightMapData.from(heightMap.getRaster(), blendWidth, seed);
+        writeHuman(heightMap, out, data);
+        File map = new File(out.getAbsoluteFile().getParentFile(), MAP_FILE);
+        TempLayout temp = TempLayout.build(data, seaLevel); // the oceans of the biome map follow its zones
+        BiomeLayout layout = new BiomeLayout(seaLevel, seed, temp);
+        ImageIO.write(MapRenderer.surface(data, layout, logger), "png", map);
+        File caveMap = new File(out.getAbsoluteFile().getParentFile(), CAVE_MAP_FILE);
+        ImageIO.write(MapRenderer.caves(data, layout, logger), "png", caveMap);
+        logger.info(caveMap.getAbsolutePath() + " : carte des biomes souterrains, à deux profondeurs");
+        File tempMap = new File(out.getAbsoluteFile().getParentFile(), TEMP_MAP_FILE);
+        ImageIO.write(MapRenderer.temp(data, temp, logger), "png", tempMap);
+        logger.info(tempMap.getAbsolutePath() + " : carte intermédiaire, zones selon l'altitude seule");
+        logger.info(map.getAbsolutePath() + " : carte des biomes (carte d'origine et ses huit copies) avec glossaire, "
+                + "niveau de la mer " + seaLevel + ", hauteur max " + data.highest());
+    }
+
+    /**
+     * Checks an existing height map against the wanted heights and rescales it if needed, then rewrites
+     * {@code map.png}. The exact real altitudes ({@code heightmap_source.bin}) are used when present; otherwise the
      * map itself is rescaled (same factor in x, z and height), which is less precise on the heights.
      */
     public void adjust(File out, int bottomY, int topY) throws Exception {
@@ -335,28 +463,43 @@ public final class HeightMapGenerator {
                 hi = Math.max(hi, v);
             }
         }
-        if (lo == bottomY && hi == topY) {
-            logger.info(out.getAbsolutePath() + " : hauteurs " + lo + " à " + hi + ", l'échelle est déjà bonne");
-            writeHuman(image, out);
+        int shore = TempLayout.beachStart(seaLevel);
+        double current = seaShare(values, width, height, 1, shore, 1);
+        if (hi == topY && current >= SEA_SHARE_MIN && current <= SEA_SHARE_MAX) {
+            logger.info(String.format(Locale.ROOT, "%s : hauteurs %d à %d, mer %.1f %%, l'échelle est déjà bonne",
+                    out.getAbsolutePath(), lo, hi, 100 * current));
+            writeMap(image, out);
             return;
         }
-        double scale = hi - lo < 1 ? 1 : (topY - bottomY) / (double) (hi - lo);
-        boolean capped = Math.max(width, height) * scale > MAX_SIDE;
-        if (capped) {
-            scale = (double) MAX_SIDE / Math.max(width, height);
+        if (Math.max(width, height) >= MAX_SIDE) {
+            // A map this big was cut at its edges, which may have taken the extreme heights: its scale cannot be checked.
+            logger.info(out.getAbsolutePath() + " : carte rognée à " + MAX_SIDE + " blocs, hauteurs " + lo + " à " + hi
+                    + " (voulu " + bottomY + " à " + topY + "), l'échelle n'est pas vérifiée (supprimer la height map pour la refaire)");
+            writeMap(image, out);
+            return;
         }
-        int outWidth = Math.max(1, (int) Math.round(width * scale));
-        int outHeight = Math.max(1, (int) Math.round(height * scale));
-        double stepX = (double) width / outWidth;
-        double stepZ = (double) height / outHeight;
+        double fillScale = hi - lo < 1 ? 1 : (topY - bottomY) / (double) (hi - lo);
+        // The data are heights already: the scale that fills the range is the one tried first, unless the map already
+        // reaches the ceiling, in which case the first try is the map as it is (the shore at S - 3).
+        double initial = hi == topY ? shore : lo + (shore - bottomY) / fillScale;
+        SeaFit fit = fitSea(values, width, height, 1, lo, hi, topY, initial);
+        double scale = fit.scale;
+        int fullWidth = Math.max(1, (int) Math.round(width * scale));
+        int fullHeight = Math.max(1, (int) Math.round(height * scale));
+        int outWidth = Math.min(fullWidth, MAX_SIDE); // a bigger map keeps its scale and is cut at the edges
+        int outHeight = Math.min(fullHeight, MAX_SIDE);
+        int offsetX = (fullWidth - outWidth) / 2;
+        int offsetZ = (fullHeight - outHeight) / 2;
+        double stepX = (double) width / fullWidth;
+        double stepZ = (double) height / fullHeight;
         BufferedImage map = new BufferedImage(outWidth, outHeight, BufferedImage.TYPE_USHORT_GRAY);
         var raster = map.getRaster();
         int lowest = Integer.MAX_VALUE;
         int highest = Integer.MIN_VALUE;
         for (int j = 0; j < outHeight; j++) {
             for (int i = 0; i < outWidth; i++) {
-                double y = sample(values, width, height, (i + 0.5) * stepX, (j + 0.5) * stepZ, stepX, stepZ);
-                int value = (int) Math.clamp(Math.round(bottomY + (y - lo) * scale), 0, 65535);
+                double y = sample(values, width, height, (i + offsetX + 0.5) * stepX, (j + offsetZ + 0.5) * stepZ, stepX, stepZ);
+                int value = (int) Math.clamp(Math.round(shore + (y - fit.anchor) * scale), 0, 65535);
                 lowest = Math.min(lowest, value);
                 highest = Math.max(highest, value);
                 raster.setSample(i, j, 0, value);
@@ -368,10 +511,12 @@ public final class HeightMapGenerator {
         logger.info(String.format(Locale.ROOT, "%s : hauteurs %d à %d, voulu %d à %d, carte %dx%d remise à l'échelle "
                         + "x%.3f (x, z et hauteur) en %dx%d blocs, hauteurs %d à %d",
                 out.getAbsolutePath(), lo, hi, bottomY, topY, width, height, scale, outWidth, outHeight, lowest, highest));
-        writeHuman(map, out);
-        if (capped) {
-            logger.warning("Attention : relief trop plat, la carte est limitée à " + MAX_SIDE
-                    + " blocs de côté, la hauteur ne remplit pas tout le monde.");
+        logger.info(String.format(Locale.ROOT, "Mer : %.1f %% de la carte (sous y=%d), la hauteur %.1f est mise au bord de la mer",
+                100 * fit.share, shore, fit.anchor));
+        writeMap(map, out);
+        if (fullWidth > outWidth || fullHeight > outHeight) {
+            logger.warning("Attention : la carte ferait " + fullWidth + "x" + fullHeight + " blocs, elle est rognée à "
+                    + outWidth + "x" + outHeight + " (les bords sont coupés, l'échelle est gardée).");
         }
     }
 
