@@ -28,6 +28,8 @@ public final class IsohypsePlugin extends JavaPlugin implements Listener {
     private Optional<WorldStyle> worldStyle = Optional.empty();
     private boolean terrainReady;
     private volatile WorldData worldData;
+    /** Released once world.bin is made (or failed): the game asks for biomes before, for the rings of the strongholds. */
+    private final java.util.concurrent.CountDownLatch worldReady = new java.util.concurrent.CountDownLatch(1);
     private boolean worldBuilt;
 
     @Override
@@ -57,8 +59,17 @@ public final class IsohypsePlugin extends JavaPlugin implements Listener {
         }
     }
 
-    /** What the generator reads {@code world.bin} with; null until the world is created. */
+    /** What the generator reads {@code world.bin} with; waits for the world to be created (null if it failed). */
     WorldData worldData() {
+        if (worldData == null) {
+            // The game works out the rings of the strongholds in the background as soon as the level exists, before the
+            // event that makes world.bin: it asks for biomes then, and waits here for the file.
+            try {
+                worldReady.await(120, java.util.concurrent.TimeUnit.SECONDS);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+        }
         return worldData;
     }
 
@@ -78,6 +89,8 @@ public final class IsohypsePlugin extends JavaPlugin implements Listener {
         } catch (Exception e) {
             getLogger().log(Level.SEVERE, "Realistic: world.bin cannot be made, stopping the server", e);
             getServer().shutdown();
+        } finally {
+            worldReady.countDown();
         }
     }
 

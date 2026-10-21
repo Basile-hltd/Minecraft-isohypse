@@ -15,8 +15,9 @@ import java.util.Random;
  * <p>Everything comes from {@code plugins/Isohypse/world.bin}, made when the world is created (see
  * {@link IsohypsePlugin}) and read from the disk by {@link WorldData}: the height of every column and the biomes (of the
  * surface and of the caves). The ground is filled with stone, with water up to the vanilla sea level (63). It replaces
- * the vanilla noise stage only: the other vanilla stages (surface rules, carvers, decorations, mobs) run on top of it;
- * there are no structures yet.
+ * the vanilla noise stage only: the other vanilla stages (surface rules, carvers, decorations, structures, mobs) run on
+ * top of it. The structures are the game's own: where they start comes from the heights ({@link #getBaseHeight}) and the
+ * biomes ({@link #biomeAt}) given here.
  */
 public final class RealisticGenerator extends ChunkGenerator {
 
@@ -66,9 +67,16 @@ public final class RealisticGenerator extends ChunkGenerator {
         return new HeightBiomeProvider(this);
     }
 
+    /**
+     * The first free Y above the column. The ocean floor maps (what a structure under the sea is placed on) stop at the
+     * seabed; the others (the surface of the world, what stops a movement) count the water, so above a sea they are at
+     * the sea level. The game asks for it to place the structures.
+     */
     @Override
     public int getBaseHeight(WorldInfo worldInfo, Random random, int x, int z, HeightMap heightMap) {
-        return data().heightAt(x, z) + 1;
+        int top = data().heightAt(x, z);
+        boolean seabed = heightMap == HeightMap.OCEAN_FLOOR || heightMap == HeightMap.OCEAN_FLOOR_WG;
+        return (seabed ? top : Math.max(top, SEA_LEVEL)) + 1;
     }
 
     @Override
@@ -129,6 +137,6 @@ public final class RealisticGenerator extends ChunkGenerator {
 
     @Override
     public boolean shouldGenerateStructures() {
-        return false;
+        return true;
     }
 }
