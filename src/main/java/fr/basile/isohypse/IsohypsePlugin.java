@@ -11,6 +11,7 @@ import org.bukkit.generator.ChunkGenerator;
 import org.bukkit.plugin.java.JavaPlugin;
 import org.jetbrains.annotations.Nullable;
 
+import java.io.File;
 import java.io.IOException;
 import java.io.Reader;
 import java.nio.file.Files;
@@ -18,6 +19,7 @@ import java.nio.file.Path;
 import java.util.List;
 import java.util.Optional;
 import java.util.Properties;
+import java.util.logging.Level;
 
 public final class IsohypsePlugin extends JavaPlugin implements Listener {
 
@@ -35,6 +37,7 @@ public final class IsohypsePlugin extends JavaPlugin implements Listener {
         registerCommand();
         getLogger().info("Isohypse " + getPluginMeta().getVersion() + " enabled");
         logRealisticCenter();
+        prepareRealisticTerrain();
         // Test servers only: tools/local_run.py starts the JVM with -Disohypse.maxFlySpeed=true.
         if (Boolean.getBoolean("isohypse.maxFlySpeed")) {
             getServer().getPluginManager().registerEvents(this, this);
@@ -44,6 +47,36 @@ public final class IsohypsePlugin extends JavaPlugin implements Listener {
     @EventHandler
     public void onJoin(PlayerJoinEvent event) {
         event.getPlayer().setFlySpeed(1.0f); // Bukkit's maximum, also applies to spectator flight
+    }
+
+    /**
+     * Realistic only, at every start: unless {@code heightmap.bin} and {@code settings.json} were made with the
+     * parameters of the config, makes them: downloads the tiles of the area (unless {@code heightmap_source.bin} already
+     * holds it), samples the altitudes, scales them, and deletes the source and the tiles. The server waits for it, and
+     * stops if it fails.
+     */
+    private void prepareRealisticTerrain() {
+        if (worldStyle.orElse(null) != WorldStyle.REALISTIC) {
+            return;
+        }
+        File folder = getDataFolder();
+        double latitude = getConfig().getDouble("realistic.latitude");
+        double longitude = getConfig().getDouble("realistic.longitude");
+        int size = getConfig().getInt("realistic.size");
+        int maxHeight = WorldHeight.round(getConfig().getInt("world.max_height", WorldHeight.VANILLA_MAX_HEIGHT));
+        try {
+            if (HeightScale.upToDate(folder, latitude, longitude, size, maxHeight)) {
+                getLogger().info("Realistic: " + HeightScale.HEIGHTMAP_FILE + " was made with these settings ("
+                        + HeightScale.SETTINGS_FILE + "), nothing to do");
+                return;
+            }
+            new HeightMapGenerator(getLogger(), folder.toPath().resolve("dem-cache")).fetchSource(latitude, longitude, size,
+                    new File(folder, HeightMapGenerator.SOURCE_FILE));
+            HeightScale.scale(folder, latitude, longitude, size, maxHeight, getLogger());
+        } catch (Exception e) {
+            getLogger().log(Level.SEVERE, "Realistic: the terrain data cannot be made, stopping the server", e);
+            getServer().shutdown();
+        }
     }
 
     /** Prints the real-world point (latitude, longitude) that the Realistic style puts at x=0, z=0. */
@@ -61,6 +94,11 @@ public final class IsohypsePlugin extends JavaPlugin implements Listener {
     /** Called by Bukkit for worlds whose bukkit.yml entry says "generator: Isohypse". */
     @Override
     public @Nullable ChunkGenerator getDefaultWorldGenerator(String worldName, @Nullable String id) {
+        if (worldStyle.orElse(null) == WorldStyle.REALISTIC) {
+            // For now Realistic only makes heightmap_source.bin (see prepareRealisticTerrain): the world is vanilla.
+            getLogger().info("World '" + worldName + "': Realistic generator disabled for now, vanilla generation");
+            return null;
+        }
         return worldStyle.map(style -> {
             getLogger().info("World '" + worldName + "': " + style.levelType() + " generator");
             return (ChunkGenerator) new StyleRouterGenerator(style, this);

@@ -61,17 +61,10 @@ public final class RealisticGenerator extends ChunkGenerator {
                             plugin.getDataFolder().toPath().resolve("dem-cache"), SEA_LEVEL, worldInfo.getSeed(),
                             plugin.getConfig().getBoolean("realistic.tiling", false),
                             plugin.getConfig().getInt("realistic.blend_width", 200));
-                    if (!file.exists()) {
-                        plugin.getLogger().info("Realistic: generating the height map (area "
-                                + plugin.getConfig().getInt("realistic.size") + " m, heights " + bottomY + " to "
-                                + topY + "), the server waits for it...");
-                        generator.generate(plugin.getConfig().getDouble("realistic.latitude"),
-                                plugin.getConfig().getDouble("realistic.longitude"),
-                                plugin.getConfig().getInt("realistic.size"), file, bottomY, topY);
-                    } else {
-                        // Existing height map: check its scale against the world height, adjust it if needed.
-                        generator.adjust(file, bottomY, topY);
-                    }
+                    // heightmap_source.bin is made at startup (IsohypsePlugin): everything starts from it.
+                    plugin.getLogger().info("Realistic: generating the height map from heightmap_source.bin (heights "
+                            + bottomY + " to " + topY + "), the server waits for it...");
+                    generator.generate(file, bottomY, topY);
                     HeightMapData read = HeightMapData.read(file, plugin.getConfig().getBoolean("realistic.tiling", false),
                             plugin.getConfig().getInt("realistic.blend_width", 200), worldInfo.getSeed());
                     layout = new BiomeLayout(SEA_LEVEL, worldInfo.getSeed(), TempLayout.build(read, SEA_LEVEL)); // before heightMap, which unlocks the fast path
@@ -173,17 +166,17 @@ public final class RealisticGenerator extends ChunkGenerator {
 
     @Override
     public boolean shouldGenerateNoise() {
-        return false;
+        return true;
     }
 
     @Override
     public boolean shouldGenerateSurface() {
-        return true;
+        return false;
     }
 
     @Override
     public boolean shouldGenerateCaves() {
-        return true;
+        return false;
     }
 
     /**
@@ -219,12 +212,12 @@ public final class RealisticGenerator extends ChunkGenerator {
 
     @Override
     public boolean shouldGenerateDecorations() {
-        return true;
+        return false;
     }
 
     @Override
     public boolean shouldGenerateMobs() {
-        return true;
+        return false;
     }
 
     @Override

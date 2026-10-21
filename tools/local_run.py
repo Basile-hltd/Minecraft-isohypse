@@ -286,27 +286,25 @@ def install_plugin_config() -> None:
 
 
 def install_heightmap(path: str | None) -> None:
-    """Copy a height map given with --heightmap into plugins/Isohypse, so that the plugin does not fetch it again.
+    """Copy heightmap.bin and settings.json from the folder given with --heightmap into plugins/Isohypse.
 
-    A .png is a finished height map (the plugin still checks its scale and adjusts it if needed); anything else is the real-altitude file the plugin wrote as
-    heightmap_source.bin, from which it only redoes the scaling (the old height map is removed so that it does).
+    The plugin compares that settings.json with its config: if they match, it downloads and computes nothing.
     """
     if not path:
         return
     src = Path(path).expanduser().resolve()
-    if not src.is_file():
-        sys.exit(f"--heightmap: file not found: {src}")
+    if not src.is_dir():
+        sys.exit(f"--heightmap: not a folder: {src}")
+    files = [src / "heightmap.bin", src / "settings.json"]
+    for file in files:
+        if not file.is_file():
+            sys.exit(f"--heightmap: {file.name} not found in {src}")
     dest_dir = SERVER_DIR / "plugins" / "Isohypse"
     dest_dir.mkdir(parents=True, exist_ok=True)
-    if src.suffix.lower() == ".png":
-        shutil.copy2(src, dest_dir / "heightmap.png")
-        print(f"Height map copied: {src} -> plugins/Isohypse/heightmap.png (the plugin checks its scale)")
-    else:
-        shutil.copy2(src, dest_dir / "heightmap_source.bin")
-        for stale in ("heightmap.png", "heightmap_human.png", "map.png", "cave_map.png", "temp_map.png", "structure.png", "biomes.png",
-                  "biomes_cave_0.png", "biomes_cave_m40.png", "map_data.json"):
-            (dest_dir / stale).unlink(missing_ok=True)
-        print(f"Real altitudes copied: {src} -> plugins/Isohypse/heightmap_source.bin (the plugin only rescales)")
+    for file in files:
+        shutil.copy2(file, dest_dir / file.name)
+    print(f"Height map copied: heightmap.bin and settings.json from {src} -> plugins/Isohypse "
+          "(used if the settings match the config)")
 
 
 def load_gamerules() -> dict:
@@ -351,9 +349,9 @@ def main() -> None:
     ap.add_argument("--memory", default="4G", help="server memory (default: 4G)")
     ap.add_argument("--player", default="Japrisot", help="player to make op")
     ap.add_argument("--clean", action="store_true", help="delete tmp/server before starting (fresh world)")
-    ap.add_argument("--heightmap", metavar="PATH",
-                    help="Realistic: height map to copy into the plugin folder (a .png is checked and rescaled if needed; "
-                         "the heightmap_source.bin the plugin wrote is only rescaled), so nothing is fetched again")
+    ap.add_argument("--heightmap", metavar="FOLDER",
+                    help="Realistic: folder with the heightmap.bin and settings.json written by the plugin, copied "
+                         "into the plugin folder; if its settings match the config, nothing is downloaded or computed")
     ap.add_argument("--no-eula", action="store_true",
                     help="do not accept the Minecraft EULA (by default eula=true is written to eula.txt)")
     args = ap.parse_args()

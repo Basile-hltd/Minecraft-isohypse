@@ -2,7 +2,7 @@
 realistic:
   latitude: 45.903934   # degrés, de -90 (sud) à 90 (nord)
   longitude: 7.365659   # degrés, de -180 (ouest) à 180 (est)
-  size: 100000          # côté en mètres de la zone réelle récupérée ; la carte finale est mise à l'échelle (voir README)
+  size: 1000          # côté en mètres de la zone réelle récupérée ; la carte finale est mise à l'échelle (voir README)
   tiling: false       # true = la carte (si elle est carrée) est entourée de huit copies tournées / miroitées aux raccords lissés ; false = elle est simplement répétée telle quelle
   blend_width: 200    # blocs : demi-largeur de la bande lissée de chaque côté d'un raccord entre deux copies de la carte (0 = pas de lissage)
 

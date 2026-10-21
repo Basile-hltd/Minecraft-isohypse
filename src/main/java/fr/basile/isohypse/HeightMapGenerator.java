@@ -9,6 +9,7 @@ import java.io.DataInputStream;
 import java.io.DataOutputStream;
 import java.io.File;
 import java.io.FileInputStream;
+import java.io.FileNotFoundException;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.net.URI;
@@ -51,7 +52,7 @@ public final class HeightMapGenerator {
     /** The altitude in grey with a dot for each structure of the game (see {@link StructureMap}). */
     public static final String STRUCTURE_FILE = "structure.png";
     public static final String SOURCE_FILE = "heightmap_source.bin";
-    private static final int SOURCE_MAGIC = 0x49534F48;
+    static final int SOURCE_MAGIC = 0x49534F48;
     /** Most samples per side of the real area: a bigger area is sampled every few metres instead of every metre. */
     private static final int MAX_SAMPLES = 4096;
     /** swissALTI3D (0.5 m, then 2 m tiles) is only used up to this sampling step (m); beyond, Terrarium is lighter. */
@@ -89,37 +90,96 @@ public final class HeightMapGenerator {
         this.blendWidth = blendWidth;
     }
 
+    /** A generator that only fetches the real altitudes ({@link #fetchSource}): nothing of what scales or draws them is used. */
+    public HeightMapGenerator(Logger logger, Path cacheDir) {
+        this(logger, cacheDir, 0, 0, false, 0);
+    }
+
+    /** Metres between two samples of the real altitudes of an area of {@code size} metres. */
+    static int stepFor(int size) {
+        return Math.max(1, (int) Math.ceil((double) size / MAX_SAMPLES));
+    }
+
+    /** Samples per side of the real altitudes of an area of {@code size} metres. */
+    static int samplesFor(int size) {
+        return (int) Math.ceil((double) size / stepFor(size));
+    }
+
     /**
-     * Writes {@code out} (16-bit height map, value = Y level) and the {@code map.png} biome map.
+     * Makes sure {@code sourceFile} ({@code heightmap_source.bin}, the real altitudes before scaling) exists for this
+     * area. If it already holds this area, nothing is downloaded. Otherwise (no file, or the file of another area,
+     * which is deleted) the tiles needed for the area are downloaded, the altitudes sampled and written in it, then
+     * the tile cache is deleted, as the file holds everything that is needed from now on. Nothing else is done: no
+     * scaling, no height map.
      *
-     * <p>The real altitudes come from {@code heightmap_source.bin} next to {@code out} when it exists (only the
-     * scaling is then done, nothing is downloaded), otherwise they are fetched and that file is written first.
-     *
-     * @param size    side in metres of the real area fetched before scaling (1 sample per metre, or per few
-     *                metres beyond {@link #MAX_SAMPLES} samples per side)
-     * @param bottomY world height given to the lowest point of the area
-     * @param topY    world height given to the highest point of the area
+     * @param size side in metres of the real area (1 sample per metre, or per few metres beyond {@link #MAX_SAMPLES}
+     *             samples per side)
      */
-    public void generate(double lat, double lon, int size, File out, int bottomY, int topY) throws Exception {
+    public void fetchSource(double lat, double lon, int size, File sourceFile) throws Exception {
+        if (sourceFile.exists()) {
+            double fileLat;
+            double fileLon;
+            int fileSize;
+            try (DataInputStream in = new DataInputStream(new BufferedInputStream(new FileInputStream(sourceFile)))) {
+                if (in.readInt() != SOURCE_MAGIC) {
+                    throw new IOException("Fichier d'altitudes réelles invalide : " + sourceFile);
+                }
+                fileLat = in.readDouble();
+                fileLon = in.readDouble();
+                fileSize = in.readInt();
+            }
+            if (fileLat == lat && fileLon == lon && fileSize == size) {
+                logger.info(sourceFile.getAbsolutePath() + " : altitudes réelles déjà présentes (zone de " + size
+                        + " m, latitude " + lat + ", longitude " + lon + "), rien n'est téléchargé");
+                return;
+            }
+            logger.info(sourceFile.getAbsolutePath() + " : c'est une autre zone (" + fileSize + " m, latitude " + fileLat
+                    + ", longitude " + fileLon + "), supprimé, la zone demandée est téléchargée");
+            Files.delete(sourceFile.toPath());
+        }
         if (size <= 0) {
             throw new IllegalArgumentException("La taille doit être > 0");
         }
         if (Math.abs(lat) > 85) {
             throw new IllegalArgumentException("Latitude hors de la couverture (±85°)");
         }
-        File dir = out.getAbsoluteFile().getParentFile();
-        File sourceFile = new File(dir, SOURCE_FILE);
-        Source source;
-        if (sourceFile.exists()) {
-            source = readSource(sourceFile);
-            logger.info(sourceFile.getAbsolutePath() + " : altitudes réelles déjà présentes (zone de " + source.size
-                    + " m, latitude " + source.lat + ", longitude " + source.lon + "), seule la mise à l'échelle est faite");
-        } else {
-            source = fetch(lat, lon, size);
-            writeSource(sourceFile, source);
-            logger.info(sourceFile.getAbsolutePath() + " : altitudes réelles enregistrées");
+        Source source = fetch(lat, lon, size);
+        writeSource(sourceFile, source);
+        logger.info(sourceFile.getAbsolutePath() + " : altitudes réelles enregistrées (zone de " + size + " m, "
+                + String.format(Locale.ROOT, "%.1f à %.1f m", source.min, source.max) + ")");
+        if (source.fallback > 0) {
+            logger.warning("Attention : " + source.fallback
+                    + " pixels hors couverture swisstopo, remplacés par Terrarium.");
         }
-        scaleAndWrite(source, out, bottomY, topY);
+        deleteCache();
+    }
+
+    /** Deletes the cache of downloaded tiles. */
+    private void deleteCache() throws IOException {
+        if (!Files.exists(cache)) {
+            return;
+        }
+        try (var paths = Files.walk(cache)) {
+            for (Path path : (Iterable<Path>) paths.sorted(java.util.Comparator.reverseOrder())::iterator) {
+                Files.delete(path);
+            }
+        }
+        logger.info(cache.toAbsolutePath() + " : tuiles supprimées, tout est dans le fichier d'altitudes réelles");
+    }
+
+    /**
+     * Writes {@code out} (16-bit height map, value = Y level) and the {@code map.png} biome map, from the real altitudes
+     * of {@code heightmap_source.bin} next to {@code out} (see {@link #fetchSource}).
+     *
+     * @param bottomY world height given to the lowest point of the area
+     * @param topY    world height given to the highest point of the area
+     */
+    public void generate(File out, int bottomY, int topY) throws Exception {
+        File sourceFile = new File(out.getAbsoluteFile().getParentFile(), SOURCE_FILE);
+        if (!sourceFile.exists()) {
+            throw new FileNotFoundException(sourceFile.getAbsolutePath());
+        }
+        scaleAndWrite(readSource(sourceFile), out, bottomY, topY);
     }
 
     /** The real altitudes (m) of the area: n x n samples, one every r metres, centred on (lat, lon). */
@@ -129,8 +189,8 @@ public final class HeightMapGenerator {
 
     /** Step 1: fetches the real altitudes, one sample every r metres (r = 1 unless the area is very big). */
     private Source fetch(double lat, double lon, int size) throws Exception {
-        int r = Math.max(1, (int) Math.ceil((double) size / MAX_SAMPLES));
-        int n = (int) Math.ceil((double) size / r);
+        int r = stepFor(size);
+        int n = samplesFor(size);
         double areaM = (double) n * r;
         if (r > 1) {
             logger.info("Zone de " + size + " m : un point d'altitude tous les " + r + " m (" + n + "x" + n + " points)");
@@ -441,93 +501,6 @@ public final class HeightMapGenerator {
         logger.info(tempMap.getAbsolutePath() + " : carte intermédiaire, zones selon l'altitude seule");
         logger.info(map.getAbsolutePath() + " : carte des biomes (carte d'origine et ses huit copies) avec glossaire, "
                 + "niveau de la mer " + seaLevel + ", hauteur max " + data.highest());
-    }
-
-    /**
-     * Checks an existing height map against the wanted heights and rescales it if needed, then rewrites
-     * {@code map.png}. The exact real altitudes ({@code heightmap_source.bin}) are used when present; otherwise the
-     * map itself is rescaled (same factor in x, z and height), which is less precise on the heights.
-     */
-    public void adjust(File out, int bottomY, int topY) throws Exception {
-        File sourceFile = new File(out.getAbsoluteFile().getParentFile(), SOURCE_FILE);
-        if (sourceFile.exists()) {
-            Source source = readSource(sourceFile);
-            logger.info(sourceFile.getAbsolutePath() + " : altitudes réelles présentes, la height map est refaite à l'échelle");
-            scaleAndWrite(source, out, bottomY, topY);
-            return;
-        }
-        BufferedImage image = ImageIO.read(out);
-        if (image == null) {
-            throw new IOException("Height map illisible : " + out);
-        }
-        int width = image.getWidth();
-        int height = image.getHeight();
-        float[] values = new float[width * height];
-        int lo = Integer.MAX_VALUE;
-        int hi = Integer.MIN_VALUE;
-        for (int j = 0; j < height; j++) {
-            for (int i = 0; i < width; i++) {
-                int v = image.getRaster().getSample(i, j, 0);
-                values[j * width + i] = v;
-                lo = Math.min(lo, v);
-                hi = Math.max(hi, v);
-            }
-        }
-        int shore = TempLayout.beachStart(seaLevel);
-        double current = seaShare(values, width, height, 1, shore, 1);
-        if (hi == topY && current >= SEA_SHARE_MIN && current <= SEA_SHARE_MAX) {
-            logger.info(String.format(Locale.ROOT, "%s : hauteurs %d à %d, mer %.1f %%, l'échelle est déjà bonne",
-                    out.getAbsolutePath(), lo, hi, 100 * current));
-            writeMap(image, out);
-            return;
-        }
-        if (Math.max(width, height) >= MAX_SIDE) {
-            // A map this big was cut at its edges, which may have taken the extreme heights: its scale cannot be checked.
-            logger.info(out.getAbsolutePath() + " : carte rognée à " + MAX_SIDE + " blocs, hauteurs " + lo + " à " + hi
-                    + " (voulu " + bottomY + " à " + topY + "), l'échelle n'est pas vérifiée (supprimer la height map pour la refaire)");
-            writeMap(image, out);
-            return;
-        }
-        double fillScale = hi - lo < 1 ? 1 : (topY - bottomY) / (double) (hi - lo);
-        // The data are heights already: the scale that fills the range is the one tried first, unless the map already
-        // reaches the ceiling, in which case the first try is the map as it is (the shore at S - 3).
-        double initial = hi == topY ? shore : lo + (shore - bottomY) / fillScale;
-        SeaFit fit = fitSea(values, width, height, 1, lo, hi, topY, initial);
-        double scale = fit.scale;
-        int fullWidth = Math.max(1, (int) Math.round(width * scale));
-        int fullHeight = Math.max(1, (int) Math.round(height * scale));
-        int outWidth = Math.min(fullWidth, MAX_SIDE); // a bigger map keeps its scale and is cut at the edges
-        int outHeight = Math.min(fullHeight, MAX_SIDE);
-        int offsetX = (fullWidth - outWidth) / 2;
-        int offsetZ = (fullHeight - outHeight) / 2;
-        double stepX = (double) width / fullWidth;
-        double stepZ = (double) height / fullHeight;
-        BufferedImage map = new BufferedImage(outWidth, outHeight, BufferedImage.TYPE_USHORT_GRAY);
-        var raster = map.getRaster();
-        int lowest = Integer.MAX_VALUE;
-        int highest = Integer.MIN_VALUE;
-        for (int j = 0; j < outHeight; j++) {
-            for (int i = 0; i < outWidth; i++) {
-                double y = sample(values, width, height, (i + offsetX + 0.5) * stepX, (j + offsetZ + 0.5) * stepZ, stepX, stepZ);
-                int value = (int) Math.clamp(Math.round(shore + (y - fit.anchor) * scale), 0, 65535);
-                lowest = Math.min(lowest, value);
-                highest = Math.max(highest, value);
-                raster.setSample(i, j, 0, value);
-            }
-        }
-        if (!ImageIO.write(map, "png", out)) {
-            throw new IllegalStateException("Écriture PNG impossible");
-        }
-        logger.info(String.format(Locale.ROOT, "%s : hauteurs %d à %d, voulu %d à %d, carte %dx%d remise à l'échelle "
-                        + "x%.3f (x, z et hauteur) en %dx%d blocs, hauteurs %d à %d",
-                out.getAbsolutePath(), lo, hi, bottomY, topY, width, height, scale, outWidth, outHeight, lowest, highest));
-        logger.info(String.format(Locale.ROOT, "Mer : %.1f %% de la carte (sous y=%d), la hauteur %.1f est mise au bord de la mer",
-                100 * fit.share, shore, fit.anchor));
-        writeMap(map, out);
-        if (fullWidth > outWidth || fullHeight > outHeight) {
-            logger.warning("Attention : la carte ferait " + fullWidth + "x" + fullHeight + " blocs, elle est rognée à "
-                    + outWidth + "x" + outHeight + " (les bords sont coupés, l'échelle est gardée).");
-        }
     }
 
     private Path download(String url, String name) throws Exception {
