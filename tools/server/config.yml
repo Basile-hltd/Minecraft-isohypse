@@ -1,4 +1,4 @@
-# Style Realistic : point du monde réel placé au centre du monde (x=0, z=0, le spawn).
+# Style Realistic : point du monde réel placé au centre du monde (x=0, z=0, le spawn). 0.249550, 6.620393
 realistic:
   latitude: 46.140810   # degrés, de -90 (sud) à 90 (nord)
   longitude: 6.958657   # degrés, de -180 (ouest) à 180 (est)
@@ -19,7 +19,7 @@ realistic:
     beach_depth: 3             # blocs sous le niveau de la mer où la plage commence (la mer s'arrête)
     beach_height: 5            # blocs au-dessus du niveau de la mer où la plage finit (la terre commence)
     beach_inland_distance: 50  # une plage à plus de tant de blocs de la mer est de la terre chaude
-    ocean_blur: 1            # blocs, à peu près l'écart type du flou de la distance au bord, dans la mer...
+    ocean_blur: 50            # blocs, à peu près l'écart type du flou de la distance au bord, dans la mer...
     land_blur: 50              # ...et sur la terre (plus étroit)
     warm_ocean_share: 0.35   # part des colonnes de mer en ocean_warm (le long du bord)...
     normal_ocean_share: 0.5 # ...en ocean_normal ; le reste est ocean_cold (le large)
