@@ -8,7 +8,7 @@ import java.util.stream.IntStream;
  * test: the edge of the sea, the sea for the inland beach), and whether it is more than {@code minDistance} blocks
  * away. The distance is the straight one, computed exactly (Felzenszwalb and Huttenlocher, one pass along the rows
  * then one along the columns), kept to a quarter of a block, and wraps around the map as the map repeats endlessly
- * (this is not true of the rotated copies of {@link HeightMapData#TILING}, which are ignored here).
+ * (this is not true of the rotated copies of tiling (config {@code realistic.tiling}), which are ignored here).
  */
 final class ShoreDistance {
 

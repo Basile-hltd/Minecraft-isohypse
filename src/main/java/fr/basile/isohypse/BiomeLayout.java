@@ -34,7 +34,7 @@ import java.util.Random;
  * <ul>
  * <li>from {@link #DEEP_DARK_Y} up: {@link #UPPER_NONE} none, then lush caves, dripstone caves and sulfur caves in the
  * proportions of {@link #UPPER_LUSH}, {@link #UPPER_DRIPSTONE} and what is left;</li>
- * <li>under it: {@link #LOWER_DEEP_DARK} deep dark (a few, very big cells), {@link #LOWER_LUSH} lush caves, the rest
+ * <li>under it: {@link #LOWER_DEEP_DARK} deep dark (small cells, spread out), {@link #LOWER_LUSH} lush caves, the rest
  * none.</li>
  * </ul>
  *
@@ -60,13 +60,13 @@ final class BiomeLayout {
     /** ...dripstone caves; the rest (0.10) is sulfur caves. */
     private static final double UPPER_DRIPSTONE = 0.20;
     /** Under it, the share of deep dark... */
-    private static final double LOWER_DEEP_DARK = 0.20;
-    /** ...and of lush caves (the rest, 0.70, has no biome). */
+    private static final double LOWER_DEEP_DARK = 0.04;
+    /** ...and of lush caves (the rest, 0.86, has no biome). */
     private static final double LOWER_LUSH = 0.10;
     /** Side (blocks) of the cave cells of the upper layer and of the lush caves below, twice as big as the land ones... */
     private static final int CAVE_CELL = 1000;
-    /** ...and of the deep dark cells, which are few and very big. */
-    private static final int DEEP_DARK_CELL = 2400;
+    /** ...and of the deep dark cells, which are small and rare, so that the patches are spread over the map. */
+    private static final int DEEP_DARK_CELL = 500;
     /** The border of a cave cell is wobbled by a noise this long (in cells) and this strong (in cells). */
     private static final double CAVE_WARP_SCALE = 1.0;
     private static final double CAVE_WARP_STRENGTH = 0.74;

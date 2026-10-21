@@ -59,6 +59,7 @@ public final class RealisticGenerator extends ChunkGenerator {
                     int topY = worldInfo.getMaxHeight() - 1;
                     HeightMapGenerator generator = new HeightMapGenerator(plugin.getLogger(),
                             plugin.getDataFolder().toPath().resolve("dem-cache"), SEA_LEVEL, worldInfo.getSeed(),
+                            plugin.getConfig().getBoolean("realistic.tiling", false),
                             plugin.getConfig().getInt("realistic.blend_width", 200));
                     if (!file.exists()) {
                         plugin.getLogger().info("Realistic: generating the height map (area "
@@ -71,8 +72,8 @@ public final class RealisticGenerator extends ChunkGenerator {
                         // Existing height map: check its scale against the world height, adjust it if needed.
                         generator.adjust(file, bottomY, topY);
                     }
-                    HeightMapData read = HeightMapData.read(file, plugin.getConfig().getInt("realistic.blend_width", 200),
-                            worldInfo.getSeed());
+                    HeightMapData read = HeightMapData.read(file, plugin.getConfig().getBoolean("realistic.tiling", false),
+                            plugin.getConfig().getInt("realistic.blend_width", 200), worldInfo.getSeed());
                     layout = new BiomeLayout(SEA_LEVEL, worldInfo.getSeed(), TempLayout.build(read, SEA_LEVEL)); // before heightMap, which unlocks the fast path
                     heightMap = read;
                 } catch (Exception e) {

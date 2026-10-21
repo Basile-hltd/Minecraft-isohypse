@@ -48,6 +48,8 @@ public final class HeightMapGenerator {
     public static final String TEMP_MAP_FILE = "temp_map.png";
     /** The readable altitude only: land in grey, sea in blue. */
     public static final String HUMAN_FILE = "heightmap_human.png";
+    /** The altitude in grey with a dot for each structure of the game (see {@link StructureMap}). */
+    public static final String STRUCTURE_FILE = "structure.png";
     public static final String SOURCE_FILE = "heightmap_source.bin";
     private static final int SOURCE_MAGIC = 0x49534F48;
     /** Most samples per side of the real area: a bigger area is sampled every few metres instead of every metre. */
@@ -69,18 +71,21 @@ public final class HeightMapGenerator {
     private final Path cache;
     private final int seaLevel;
     private final long seed;
+    private final boolean tiling;
     private final int blendWidth;
 
     /**
      * @param seaLevel Y of the sea, where the beaches start in the readable preview
      * @param seed world seed, which the biome noises of the readable preview are drawn from
+     * @param tiling whether the map is surrounded by rotated copies (see {@link HeightMapData})
      * @param blendWidth half width of the band smoothed along the seams of the 3x3 block (see {@link HeightMapData})
      */
-    public HeightMapGenerator(Logger logger, Path cacheDir, int seaLevel, long seed, int blendWidth) {
+    public HeightMapGenerator(Logger logger, Path cacheDir, int seaLevel, long seed, boolean tiling, int blendWidth) {
         this.logger = logger;
         this.cache = cacheDir;
         this.seaLevel = seaLevel;
         this.seed = seed;
+        this.tiling = tiling;
         this.blendWidth = blendWidth;
     }
 
@@ -417,11 +422,16 @@ public final class HeightMapGenerator {
      * eight rotated copies) with a glossary on the side (see {@link MapRenderer}).
      */
     private void writeMap(BufferedImage heightMap, File out) throws IOException {
-        HeightMapData data = HeightMapData.from(heightMap.getRaster(), blendWidth, seed);
+        HeightMapData data = HeightMapData.from(heightMap.getRaster(), tiling, blendWidth, seed);
         writeHuman(heightMap, out, data);
         File map = new File(out.getAbsoluteFile().getParentFile(), MAP_FILE);
         TempLayout temp = TempLayout.build(data, seaLevel); // the oceans of the biome map follow its zones
         BiomeLayout layout = new BiomeLayout(seaLevel, seed, temp);
+        try {
+            StructureMap.write(data, layout, seaLevel, seed, new File(out.getAbsoluteFile().getParentFile(), STRUCTURE_FILE), logger);
+        } catch (IOException | RuntimeException e) { // a preview: never worth stopping the world for
+            logger.warning("structure.png impossible : " + e);
+        }
         ImageIO.write(MapRenderer.surface(data, layout, logger), "png", map);
         File caveMap = new File(out.getAbsoluteFile().getParentFile(), CAVE_MAP_FILE);
         ImageIO.write(MapRenderer.caves(data, layout, logger), "png", caveMap);

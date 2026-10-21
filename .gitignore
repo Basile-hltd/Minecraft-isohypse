@@ -6,3 +6,4 @@ out/
 tmp/
 .venv/
 __pycache__/
+*.png

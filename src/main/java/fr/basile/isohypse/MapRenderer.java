@@ -40,7 +40,7 @@ final class MapRenderer {
     private static final Color ABSENT = new Color(0xd02020);
 
     /** The cave map shows the cave biomes at these two Y: one above the deep dark, one under its upper limit. */
-    private static final int[] CAVE_MAP_Y = {0, -40};
+    static final int[] CAVE_MAP_Y = {0, -40};
 
     /** What the cave map shows where a cave has no biome of its own (the surface one applies): grey, no biome. */
     private static final BiomeLayout.Entry NO_CAVE_BIOME = new BiomeLayout.Entry(null, 0x8c8c8c);

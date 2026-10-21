@@ -52,14 +52,15 @@ Au premier lancement, le plugin crée `plugins/Isohypse/config.yml` :
 | `realistic.longitude` | Longitude (-180 à 180) de ce même point |
 | `realistic.size` | Côté en mètres de la zone réelle récupérée (défaut 1000) |
 | `world.max_height` | Hauteur maximale de l'overworld (défaut 320 = vanilla, le sol reste à y=-64). Arrondie à la valeur la plus proche acceptée par le jeu : un multiple de 16 de 128 à 2032. Le plugin écrit un datapack au lancement du serveur (`plugins/Isohypse/datapack`) ; la hauteur ne s'applique qu'à un monde qui n'existe pas encore, et seulement au style `Realistic` (`Vanilla+` et `Fairy` gardent la hauteur vanilla) |
+| `realistic.tiling` | `true` : une carte carrée est entourée de huit copies, chacune dans une orientation tirée au hasard avec la seed du monde (voir plus bas), aux raccords lissés ; `false` (défaut) : la carte est simplement répétée à l'infini |
 | `realistic.blend_width` | Demi-largeur en blocs de la bande lissée de chaque côté d'un raccord entre copies de la carte (défaut 200, 0 = aucun lissage) |
 
-La latitude et la longitude sont affichées dans la console au démarrage. Avec `Realistic`, le plugin a besoin d'une height map : `plugins/Isohypse/heightmap.png` (PNG 16 bits, 1 pixel = 1 bloc, valeur = hauteur Y en blocs). Si elle n'existe pas, elle est générée à la première génération de chunk, et **le serveur attend** qu'elle soit prête avant de finir de démarrer (ça peut durer plusieurs minutes pour une grande zone). Un `map.png` (carte à regarder seulement : un pixel par bloc, colorié selon le biome, avec à droite un glossaire des biomes présents et, en rouge, des biomes de Paper absents de la carte), puis un `cave_map.png` (les biomes de grotte à deux profondeurs, y=0 et y=-40, côte à côte) et un `temp_map.png` (carte intermédiaire : sept zones tirées de la seule altitude, sans lien avec les biomes, avec leur plage de Y en glossaire) est écrit à côté.
+La latitude et la longitude sont affichées dans la console au démarrage. Avec `Realistic`, le plugin a besoin d'une height map : `plugins/Isohypse/heightmap.png` (PNG 16 bits, 1 pixel = 1 bloc, valeur = hauteur Y en blocs). Si elle n'existe pas, elle est générée à la première génération de chunk, et **le serveur attend** qu'elle soit prête avant de finir de démarrer (ça peut durer plusieurs minutes pour une grande zone). Un `map.png` (carte à regarder seulement : un pixel par bloc, colorié selon le biome, avec à droite un glossaire des biomes présents et, en rouge, des biomes de Paper absents de la carte), puis un `cave_map.png` (les biomes de grotte à deux profondeurs, y=0 et y=-40, côte à côte) un `structure.png` (la height map en gris, sans la mer en bleu, avec un point de couleur par structure du jeu : positions vanilla tirées de la seed, gardées si le biome du plugin les accepte ; glossaire à droite avec le nombre de chacune) et un `temp_map.png` (carte intermédiaire : sept zones tirées de la seule altitude, sans lien avec les biomes, avec leur plage de Y en glossaire) est écrit à côté.
 
 1. Il récupère les altitudes réelles d'une zone de `size` x `size` mètres autour du point (1 point par mètre ; au-delà de 4096 points de côté, un point tous les quelques mètres, et swisstopo cède la place à Terrarium au-delà de 4 m). Sources : swisstopo swissALTI3D en Suisse, sinon AWS Terrarium. Les tuiles téléchargées sont gardées dans `plugins/Isohypse/dem-cache/`.
 2. Il met toute la carte à l'échelle avec un seul facteur, identique en x, z et en hauteur : le point le plus bas arrive à 30 blocs sous le niveau de la mer et le plus haut à la hauteur max du monde (lue via Paper). Si la mer (les colonnes sous y=60, soit 3 blocs sous le niveau de la mer) ne couvre pas entre 12 et 22 % de la carte, l'altitude réelle placée au bord de la mer est déplacée (recherche par dichotomie, visant 17 %), le point le plus haut restant au plafond, avec toujours un seul facteur en x, z et hauteur. Si le fond descend sous y=0, il est écrêté à 0 (le PNG ne stocke pas de Y négatif). La carte finale fait donc moins de `size` blocs si le relief est plus haut que le monde, et plus si le relief est faible. Au-delà de 10000 blocs de côté, la carte garde son échelle et ses bords sont coupés (autour de son centre), si bien que le relief peut perdre ses points les plus bas ou les plus hauts.
 
-Le terrain suit cette height map, centrée sur x=0, z=0, nord vers les z négatifs. Hors de la carte, si elle est carrée et si `HeightMapData.TILING` est à `true` (désactivé pour l'instant : sinon la carte est simplement répétée à l'infini, et `map.png` ainsi que `heightmap_human.png` ne montrent qu'elle), elle est entourée de huit copies, chacune dans une orientation tirée au hasard avec la seed du monde parmi les huit symétries du carré (quatre rotations de 90° et leurs miroirs ; la carte d'origine garde la sienne, et deux copies voisines n'ont jamais la même) et ce bloc de 3x3 se répète à l'infini ; une carte non carrée est simplement répétée. Les raccords entre copies sont lissés par un filtre passe-bas appliqué une fois le bloc de 3x3 assemblé, uniquement sur une bande de `realistic.blend_width` blocs de chaque côté du raccord (200 par défaut, limité à la moitié de la carte ; 0 désactive le lissage). Le lissage vaut 1 sur le raccord et diminue jusqu'à 0 au bord de la bande, donc le reste de la carte n'est pas modifié. `map.png` et `heightmap_human.png` montrent le résultat lissé. Si `heightmap.png` existe déjà, le plugin en vérifie quand même l'échelle (plus bas et plus haut points contre 30 blocs sous la mer et la hauteur max du monde), la corrige si besoin avec un seul facteur en x, z et hauteur, et régénère toujours `map.png`. Sans `heightmap_source.bin`, la correction se fait sur la carte elle-même, donc un peu moins précise sur les hauteurs.
+Le terrain suit cette height map, centrée sur x=0, z=0, nord vers les z négatifs. Hors de la carte, si elle est carrée et si `realistic.tiling` est à `true` (désactivé par défaut : sinon la carte est simplement répétée à l'infini, et `map.png` ainsi que `heightmap_human.png` ne montrent qu'elle), elle est entourée de huit copies, chacune dans une orientation tirée au hasard avec la seed du monde parmi les huit symétries du carré (quatre rotations de 90° et leurs miroirs ; la carte d'origine garde la sienne, et deux copies voisines n'ont jamais la même) et ce bloc de 3x3 se répète à l'infini ; une carte non carrée est simplement répétée. Les raccords entre copies sont lissés par un filtre passe-bas appliqué une fois le bloc de 3x3 assemblé, uniquement sur une bande de `realistic.blend_width` blocs de chaque côté du raccord (200 par défaut, limité à la moitié de la carte ; 0 désactive le lissage). Le lissage vaut 1 sur le raccord et diminue jusqu'à 0 au bord de la bande, donc le reste de la carte n'est pas modifié. `map.png` et `heightmap_human.png` montrent le résultat lissé. Si `heightmap.png` existe déjà, le plugin en vérifie quand même l'échelle (plus bas et plus haut points contre 30 blocs sous la mer et la hauteur max du monde), la corrige si besoin avec un seul facteur en x, z et hauteur, et régénère toujours `map.png`. Sans `heightmap_source.bin`, la correction se fait sur la carte elle-même, donc un peu moins précise sur les hauteurs.
 
 Le plugin garde aussi les altitudes réelles dans `heightmap_source.bin` (avant mise à l'échelle). Si ce fichier existe et que `heightmap.png` est supprimé, il refait seulement la mise à l'échelle, sans rien télécharger : copie-le avec `--heightmap` de `local_run.py` pour ne pas tout récupérer après un `--clean`. Supprimer aussi ce fichier relance le téléchargement.
 
@@ -96,23 +97,23 @@ pip install -r tools/requirements.txt
 
 ### `tools/local_run.py` : serveur de test
 
-Construit le plugin, télécharge Paper, puis lance un serveur local avec le plugin installé.
+Construit le plugin, télécharge Paper, puis lance un serveur local avec le plugin installé. Les réglages se font dans deux fichiers de `tools/server/`, appliqués à chaque lancement : il suffit de les modifier puis de lancer avec `--clean` pour un monde neuf.
+
+| Fichier | Effet |
+|---------|-------|
+| `tools/server/config.yml` | Copié tel quel sur `plugins/Isohypse/config.yml` (coordonnées, `size`, `max_height`, `blend_width`…) |
+| `tools/server/server.properties` | Les clés qu'il contient écrasent celles du `server.properties` du serveur (`level-type`, `level-seed`, gamemode, `online-mode`…). `level-seed` vide = seed aléatoire, affichée au démarrage. Quand `level-type` est `Vanilla+`, `Realistic` ou `Fairy`, le script écrit aussi `generator: Isohypse` dans `bukkit.yml` |
 
 ```bash
-python tools/local_run.py --mc-version 26.3 --level-type Vanilla+ --clean
+python tools/local_run.py --clean
 ```
 
 | Option | Rôle |
 |--------|------|
 | `--mc-version` | Version de Minecraft / Paper (défaut : `26.3`) |
-| `--level-type` | Valeur de `level-type`, par exemple `Vanilla+`, `Realistic` ou `Fairy`. Écrit aussi l'entrée `generator: Isohypse` dans `bukkit.yml` |
-| `--seed` | Seed du monde (défaut : aléatoire, affichée au démarrage). Ne s'applique qu'à un nouveau monde : à combiner avec `--clean` |
 | `--clean` | Supprime `tmp/server` avant de démarrer (monde neuf) |
 | `--memory` | Mémoire du serveur (défaut : `4G`) |
 | `--player` | Joueur mis op (défaut : `Japrisot`) |
-| `--coord` | `latitude, longitude` du centre du monde pour `Realistic`, collable tel quel, par exemple `--coord 46.168358, 6.934330` (écrit dans `plugins/Isohypse/config.yml`) |
-| `--max-height` | Hauteur maximale de l'overworld (écrit `world.max_height` dans `plugins/Isohypse/config.yml`, arrondie par le plugin à la valeur valide la plus proche) ; à combiner avec `--clean` pour un monde existant |
-| `--size` | Côté en mètres de la zone réelle de la height map de `Realistic` (écrit dans `plugins/Isohypse/config.yml`, défaut 1000) |
 | `--heightmap` | Chemin d'une height map à copier dans `plugins/Isohypse/` pour que le plugin ne la récupère pas à nouveau : un `.png` est vérifié par le plugin puis remis à l'échelle si besoin, le `heightmap_source.bin` écrit par le plugin est seulement remis à l'échelle |
 | `--no-eula` | N'écrit pas `eula=true` : par défaut, le script accepte l'EULA de Minecraft |
 
@@ -127,6 +128,18 @@ Liste de slugs [Modrinth](https://modrinth.com) (par exemple `lod-server-support
 #### Gamerules : `tools/gamerules.yml`
 
 Les gamerules listés (par défaut : temps figé, météo figée, pas de mobs) sont envoyés au serveur dès qu'il est prêt, à chaque démarrage. Les noms sont ceux de 26.x (`advance_time`, `spawn_mobs`…). La console du serveur reste utilisable normalement.
+
+### `tools/map_viewer.py` : carte interactive
+
+Fenêtre qui affiche la height map de `Realistic` avec, au choix, les structures du jeu (un point par structure) et les biomes (en surimpression, opacité réglable ; l'onglet Biomes propose le calque Surface et les grottes à y=0 et y=-40, comme `cave_map.png`). Les cases à cocher permettent de n'afficher que certaines structures ou certains biomes (avec leur part de la carte). Molette pour zoomer, glisser pour se déplacer, double-clic pour copier une commande `/tp` vers l'endroit. La barre du bas donne x, z, la hauteur et les biomes sous la souris (surface et grottes), et nomme la structure proche du pointeur.
+
+```bash
+pip install -r tools/requirements.txt
+python tools/map_viewer.py                  # lit tmp/server/plugins/Isohypse
+python tools/map_viewer.py chemin/vers/dossier
+```
+
+Il lit `heightmap.png`, `biomes.png`, `biomes_cave_0.png` et `biomes_cave_m40.png` (biome de chaque colonne en surface et dans les grottes, en indices) et `map_data.json` (taille, niveau de la mer, biomes de chaque calque avec leur couleur, position des structures), que le plugin écrit avec les autres cartes quand il génère la height map.
 
 ### `tools/download_minecraft.py` : client
 
@@ -164,7 +177,7 @@ Le lancement hors-ligne ne permet de rejoindre que des serveurs en `online-mode=
 Dans un terminal, le serveur :
 
 ```bash
-python tools/local_run.py --mc-version 26.3 --level-type Vanilla+ --clean
+python tools/local_run.py --clean
 ```
 
 Dans un autre, le client, connecté directement au serveur :

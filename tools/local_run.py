@@ -10,7 +10,10 @@ Everything is created in tmp/ at the repo root (ignored by git):
 Usage :
     python -m venv .venv && source .venv/bin/activate    (Windows : .venv\\Scripts\\activate)
     pip install -r tools/requirements.txt
-    python tools/local_run.py --mc-version 26.2 [--seed 1234] [--clean] [--no-eula]
+    python tools/local_run.py --mc-version 26.2 [--clean] [--no-eula]
+
+The test settings live in tools/server/: config.yml (copied to plugins/Isohypse/config.yml) and
+server.properties (keys applied over the server's server.properties: level-type, level-seed...).
 """
 import argparse
 import hashlib
@@ -198,6 +201,7 @@ def download_paper(mc_version: str) -> Path:
 PLUGINS_FILE = ROOT / "tools" / "plugins.yml"
 PLUGIN_CACHE = TMP / "plugin-cache"
 GAMERULES_FILE = ROOT / "tools" / "gamerules.yml"
+SERVER_CONFIG_DIR = ROOT / "tools" / "server"  # config.yml and server.properties copied / applied at each launch
 
 
 def install_plugins(plugins_dir: Path, mc_version: str, paper_version: str) -> None:
@@ -262,34 +266,23 @@ def write_ops(player: str) -> None:
     (SERVER_DIR / "ops.json").write_text(json.dumps(ops, indent=2))
 
 
-def parse_coord(coord: list[str] | None) -> tuple[float | None, float | None]:
-    """Parse "46.168358, 6.934330" (quoted or not, comma and/or space separated) into (latitude, longitude)."""
-    if not coord:
-        return None, None
-    try:
-        latitude, longitude = (float(v) for v in re.split(r"[,\s;]+", " ".join(coord).strip()))
-    except ValueError:
-        sys.exit('--coord expects "latitude, longitude", e.g. --coord 46.168358, 6.934330')
-    if not (-90 <= latitude <= 90 and -180 <= longitude <= 180):
-        sys.exit("--coord: latitude must be in [-90, 90] and longitude in [-180, 180].")
-    return latitude, longitude
+def read_properties(path: Path) -> dict[str, str]:
+    """Read a .properties file (key=value lines, # comments) into a dict."""
+    props = {}
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if line and not line.startswith("#") and "=" in line:
+            key, value = line.split("=", 1)
+            props[key.strip()] = value.strip()
+    return props
 
 
-def write_plugin_config(latitude: float | None, longitude: float | None, size: int | None, max_height: int | None) -> None:
-    """Set realistic.latitude / longitude / size and world.max_height in plugins/Isohypse/config.yml (created from the plugin's default)."""
-    if latitude is None and longitude is None and size is None and max_height is None:
-        return
-    config = SERVER_DIR / "plugins" / "Isohypse" / "config.yml"
-    if not config.exists():
-        config.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(ROOT / "src" / "main" / "resources" / "config.yml", config)
-    text = config.read_text(encoding="utf-8")
-    for key, value in (("latitude", latitude), ("longitude", longitude), ("size", size), ("max_height", max_height)):
-        if value is not None:
-            text = re.sub(rf"^(\s*{key}:)\s*[-\d.]+", lambda m: f"{m.group(1)} {value}", text, flags=re.MULTILINE)
-    config.write_text(text, encoding="utf-8")
-    print(f"Plugin config: latitude {latitude}, longitude {longitude}, size {size}, max height {max_height} (None = unchanged; "
-          "the plugin rounds the max height to the closest valid one)")
+def install_plugin_config() -> None:
+    """Copy tools/server/config.yml over plugins/Isohypse/config.yml (the test settings of the plugin)."""
+    dest = SERVER_DIR / "plugins" / "Isohypse" / "config.yml"
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(SERVER_CONFIG_DIR / "config.yml", dest)
+    print("Plugin config: tools/server/config.yml -> plugins/Isohypse/config.yml")
 
 
 def install_heightmap(path: str | None) -> None:
@@ -310,7 +303,8 @@ def install_heightmap(path: str | None) -> None:
         print(f"Height map copied: {src} -> plugins/Isohypse/heightmap.png (the plugin checks its scale)")
     else:
         shutil.copy2(src, dest_dir / "heightmap_source.bin")
-        for stale in ("heightmap.png", "heightmap_human.png", "map.png", "cave_map.png", "temp_map.png"):
+        for stale in ("heightmap.png", "heightmap_human.png", "map.png", "cave_map.png", "temp_map.png", "structure.png", "biomes.png",
+                  "biomes_cave_0.png", "biomes_cave_m40.png", "map_data.json"):
             (dest_dir / stale).unlink(missing_ok=True)
         print(f"Real altitudes copied: {src} -> plugins/Isohypse/heightmap_source.bin (the plugin only rescales)")
 
@@ -357,14 +351,6 @@ def main() -> None:
     ap.add_argument("--memory", default="4G", help="server memory (default: 4G)")
     ap.add_argument("--player", default="Japrisot", help="player to make op")
     ap.add_argument("--clean", action="store_true", help="delete tmp/server before starting (fresh world)")
-    ap.add_argument("--seed", help="world seed (default: random, printed at startup)")
-    ap.add_argument("--level-type", help="level-type value for server.properties (e.g. Realistic, Fairy, Vanilla+)")
-    ap.add_argument("--coord", nargs="+", metavar="LAT, LON",
-                    help='Realistic: "latitude, longitude" of the world center (x=0, z=0), e.g. --coord 46.168358, 6.934330')
-    ap.add_argument("--size", type=int, help="Realistic: side of the height map in blocks (default: plugin config, 1000)")
-    ap.add_argument("--max-height", type=int,
-                    help="maximum height of the overworld (default: plugin config, 320 = vanilla); the plugin rounds it to "
-                         "the closest height the game accepts and adds the datapack at launch; needs --clean for an existing world")
     ap.add_argument("--heightmap", metavar="PATH",
                     help="Realistic: height map to copy into the plugin folder (a .png is checked and rescaled if needed; "
                          "the heightmap_source.bin the plugin wrote is only rescaled), so nothing is fetched again")
@@ -391,18 +377,15 @@ def main() -> None:
     shutil.copy2(plugin_jar, plugins)
 
     install_plugins(plugins, args.mc_version, paper_version)
-    write_plugin_config(*parse_coord(args.coord), args.size, args.max_height)
+    install_plugin_config()
     install_heightmap(args.heightmap)
 
     if not args.no_eula:
         (SERVER_DIR / "eula.txt").write_text("eula=true\n")
 
-    # Whitelist disabled, offline mode, spectator by default (Paper fills in server.properties on first launch).
-    props = {"white-list": "false", "enforce-whitelist": "false", "gamemode": "spectator",
-             "online-mode": "false"}  # no account check: lets the offline client of download_minecraft.py --run in
-    if args.level_type:
-        props["level-type"] = args.level_type
-    seed = args.seed if args.seed is not None else str(random.randint(-2**63, 2**63 - 1))
+    # Overrides from tools/server/server.properties (Paper fills in the rest on first launch).
+    props = read_properties(SERVER_CONFIG_DIR / "server.properties")
+    seed = props.get("level-seed") or str(random.randint(-2**63, 2**63 - 1))  # empty = random
     props["level-seed"] = seed
     set_properties(SERVER_DIR / "server.properties", props)
     print(f"World seed: {seed}")
@@ -414,10 +397,11 @@ def main() -> None:
     if not spigot.exists():
         spigot.write_text("settings:\n  moved-too-quickly-multiplier: 1000.0\n  moved-wrongly-threshold: 1000.0\n")
 
-    # Tell Bukkit to use the plugin's generator for the overworld when a custom level-type is requested.
+    # Tell Bukkit to use the plugin's generator for the overworld when level-type is one of the plugin's styles.
     # bukkit.yml is rewritten (Paper refills the defaults); otherwise a stale generator line is removed.
     bukkit = SERVER_DIR / "bukkit.yml"
-    if args.level_type:
+    level_type = props.get("level-type", "").lower().removeprefix("isohypse:")
+    if level_type in ("vanilla+", "realistic", "fairy"):
         bukkit.write_text("worlds:\n  world:\n    generator: Isohypse\n")
     elif bukkit.exists() and "generator: Isohypse" in bukkit.read_text():
         bukkit.unlink()

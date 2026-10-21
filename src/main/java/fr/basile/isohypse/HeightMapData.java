@@ -29,13 +29,6 @@ import java.util.stream.IntStream;
 final class HeightMapData {
 
     /**
-     * The one switch of the tiling: true = a square map is surrounded by eight rotated or mirrored copies and their
-     * seams are smoothed (everything described above); false = the map is simply repeated endlessly, as it is, and the
-     * previews show the map alone.
-     */
-    static final boolean TILING = false;
-
-    /**
      * Symmetry of the copy at [row][column] of the 3x3 block (north-west first, the original in the middle, always
      * 0): 0 to 3 = that many quarter turns clockwise, 4 to 7 = the same after a left-right mirror. Drawn from the world
      * seed, so that no copy has the same symmetry as one of the four copies it touches (the block repeats, so the
@@ -51,7 +44,7 @@ final class HeightMapData {
 
     /** Half width of a smoothed band (blocks), 0 when nothing is smoothed. */
     private final int blend;
-    /** Whether the copies around the map are rotated and smoothed (see {@link #TILING}); always false if not square. */
+    /** Whether the copies around the map are rotated and smoothed (config {@code realistic.tiling}); always false if not square. */
     private final boolean tiled;
     /** Side of the 3x3 block: the pattern, rotations included, repeats every {@code period} blocks. */
     private final int period;
@@ -64,7 +57,7 @@ final class HeightMapData {
     /** Final heights in the bands along the horizontal seams, by [band slot * period + column]. */
     private char[] horizontal;
 
-    private HeightMapData(int width, int height, int[] values, int blendWidth, long seed) {
+    private HeightMapData(int width, int height, int[] values, boolean tiling, int blendWidth, long seed) {
         this.width = width;
         this.height = height;
         this.values = values;
@@ -78,7 +71,7 @@ final class HeightMapData {
         this.lowest = min;
         drawSymmetries(seed);
         this.period = 3 * width;
-        this.tiled = TILING && width == height;
+        this.tiled = tiling && width == height;
         this.blend = tiled ? Math.min(blendWidth, width / 2) : 0;
         this.weights = new double[2 * blend];
         this.details = new double[2 * blend];
@@ -145,19 +138,22 @@ final class HeightMapData {
     }
 
     /**
+     * @param tiling true = a square map is surrounded by eight rotated or mirrored copies and their seams are smoothed
+     *               (everything described above); false = the map is simply repeated endlessly, as it is, and the
+     *               previews show the map alone
      * @param blendWidth half width in blocks of the smoothed band along each seam, 0 for none
      * @param seed world seed, which draws the symmetry of the eight copies
      */
-    static HeightMapData read(File file, int blendWidth, long seed) throws IOException {
+    static HeightMapData read(File file, boolean tiling, int blendWidth, long seed) throws IOException {
         var image = ImageIO.read(file);
         if (image == null) {
             throw new IOException("Height map illisible : " + file);
         }
-        return from(image.getRaster(), blendWidth, seed);
+        return from(image.getRaster(), tiling, blendWidth, seed);
     }
 
     /** A height map from a one-band raster (the value of a pixel is the Y level). */
-    static HeightMapData from(Raster raster, int blendWidth, long seed) {
+    static HeightMapData from(Raster raster, boolean tiling, int blendWidth, long seed) {
         int width = raster.getWidth();
         int height = raster.getHeight();
         int[] values = new int[width * height];
@@ -166,7 +162,7 @@ final class HeightMapData {
                 values[j * width + i] = raster.getSample(i, j, 0);
             }
         }
-        return new HeightMapData(width, height, values, blendWidth, seed);
+        return new HeightMapData(width, height, values, tiling, blendWidth, seed);
     }
 
     /** Y level of the top block at world column (x, z), in the rotated copies outside the map, seams smoothed. */
