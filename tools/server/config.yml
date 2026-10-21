@@ -1,8 +1,8 @@
 # Style Realistic : point du monde réel placé au centre du monde (x=0, z=0, le spawn). 0.249550, 6.620393
 realistic:
-  latitude: 46.140810   # degrés, de -90 (sud) à 90 (nord)
-  longitude: 6.958657   # degrés, de -180 (ouest) à 180 (est)
-  size: 50000          # côté en mètres de la zone réelle récupérée ; la carte finale est mise à l'échelle (voir README)
+  latitude: 0.249550   # degrés, de -90 (sud) à 90 (nord)
+  longitude: 6.620393   # degrés, de -180 (ouest) à 180 (est)
+  size: 60000          # côté en mètres de la zone réelle récupérée ; la carte finale est mise à l'échelle (voir README)
   tiling: false       # true = la carte (si elle est carrée) est entourée de huit copies tournées / miroitées aux raccords lissés ; false = elle est simplement répétée telle quelle
   blend_width: 200    # blocs : demi-largeur de la bande lissée de chaque côté d'un raccord entre deux copies de la carte (0 = pas de lissage)
 
