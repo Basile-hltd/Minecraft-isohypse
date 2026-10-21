@@ -6,6 +6,10 @@ import org.bukkit.command.CommandSender;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.Listener;
 import org.bukkit.event.player.PlayerJoinEvent;
+import org.bukkit.event.world.ChunkLoadEvent;
+import org.bukkit.Chunk;
+import org.bukkit.ChunkSnapshot;
+import org.bukkit.Material;
 import org.bukkit.event.world.WorldInitEvent;
 import org.bukkit.permissions.Permission;
 import org.bukkit.permissions.PermissionDefault;
@@ -71,6 +75,41 @@ public final class IsohypsePlugin extends JavaPlugin implements Listener {
             }
         }
         return worldData;
+    }
+
+    /**
+     * Debug (Realistic): once a chunk is fully generated (every stage of the game done), logs the columns whose highest
+     * block is water above the sea level, which is what the sea surface never is.
+     */
+    @EventHandler
+    public void onNewChunk(ChunkLoadEvent event) {
+        if (!event.isNewChunk() || worldStyle.orElse(null) != WorldStyle.REALISTIC
+                || event.getWorld().getEnvironment() != World.Environment.NORMAL) {
+            return;
+        }
+        Chunk chunk = event.getChunk();
+        ChunkSnapshot snapshot = chunk.getChunkSnapshot(true, false, false);
+        int count = 0;
+        int highest = Integer.MIN_VALUE;
+        StringBuilder columns = new StringBuilder();
+        for (int x = 0; x < 16; x++) {
+            for (int z = 0; z < 16; z++) {
+                int y = snapshot.getHighestBlockYAt(x, z);
+                if (y > HeightScale.SEA_LEVEL && snapshot.getBlockType(x, y, z) == Material.WATER) {
+                    if (count++ < 5) {
+                        columns.append(" [x=").append(chunk.getX() * 16 + x).append(" z=").append(chunk.getZ() * 16 + z)
+                                .append(" eau en haut y=").append(y).append(" biome=")
+                                .append(snapshot.getBiome(x, y, z).key().value()).append(']');
+                    }
+                    highest = Math.max(highest, y);
+                }
+            }
+        }
+        if (count > 0) {
+            getLogger().warning("[eau] FINAL chunk (" + chunk.getX() + ", " + chunk.getZ() + ") après toutes les étapes : " + count
+                    + " colonnes dont le haut est de l'eau au-dessus de y=" + HeightScale.SEA_LEVEL + " (max y=" + highest
+                    + ") ; exemples :" + columns);
+        }
     }
 
     /**
