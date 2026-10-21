@@ -288,7 +288,8 @@ def install_plugin_config() -> None:
 def install_heightmap(path: str | None) -> None:
     """Copy heightmap.bin and settings.json from the folder given with --heightmap into plugins/Isohypse.
 
-    The plugin compares that settings.json with its config: if they match, it downloads and computes nothing.
+    The plugin compares that settings.json with its config: if they match, it downloads nothing (world.bin is made from
+    heightmap.bin at every start).
     """
     if not path:
         return
@@ -303,7 +304,7 @@ def install_heightmap(path: str | None) -> None:
     dest_dir.mkdir(parents=True, exist_ok=True)
     for file in files:
         shutil.copy2(file, dest_dir / file.name)
-    print(f"Height map copied: heightmap.bin and settings.json from {src} -> plugins/Isohypse "
+    print(f"Heights copied: heightmap.bin and settings.json from {src} -> plugins/Isohypse "
           "(used if the settings match the config)")
 
 
@@ -351,7 +352,7 @@ def main() -> None:
     ap.add_argument("--clean", action="store_true", help="delete tmp/server before starting (fresh world)")
     ap.add_argument("--heightmap", metavar="FOLDER",
                     help="Realistic: folder with the heightmap.bin and settings.json written by the plugin, copied "
-                         "into the plugin folder; if its settings match the config, nothing is downloaded or computed")
+                         "into the plugin folder; if its settings match the config, nothing is downloaded")
     ap.add_argument("--no-eula", action="store_true",
                     help="do not accept the Minecraft EULA (by default eula=true is written to eula.txt)")
     args = ap.parse_args()

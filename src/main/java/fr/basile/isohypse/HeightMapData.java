@@ -155,27 +155,21 @@ final class HeightMapData {
         return from(image.getRaster(), tiling, blendWidth, seed);
     }
 
-    /** The height map of {@code heightmap.bin} (see {@link HeightScale}), not tiled: it repeats as it is. */
-    static HeightMapData fromBin(File file) throws IOException {
+    /** The layer {@code height} of a {@code world.bin} (see {@link WorldFile}), not tiled: it repeats as it is. */
+    static HeightMapData fromWorld(File file) throws IOException {
+        WorldFile.Directory directory = WorldFile.read(file);
+        WorldFile.Layer layer = directory.layer(WorldFile.HEIGHT);
+        int width = layer.columns();
+        int height = layer.rows();
+        int[] values = new int[width * height];
         try (FileChannel channel = FileChannel.open(file.toPath(), StandardOpenOption.READ)) {
-            ByteBuffer header = ByteBuffer.allocate(12);
-            if (channel.read(header, 0) != 12) {
-                throw new IOException("heightmap.bin trop court : " + file);
-            }
-            header.flip();
-            if (header.getInt() != HeightScale.HEIGHTMAP_MAGIC) {
-                throw new IOException("Ce n'est pas un heightmap.bin : " + file);
-            }
-            int width = header.getInt();
-            int height = header.getInt();
-            int[] values = new int[width * height];
             ByteBuffer buffer = ByteBuffer.allocateDirect(1 << 20);
-            long position = 12;
+            long position = layer.offset();
             int index = 0;
             while (index < values.length) {
                 buffer.clear();
                 if (channel.read(buffer, position) <= 0) {
-                    throw new IOException("heightmap.bin trop court : " + file);
+                    throw new IOException("world.bin trop court : " + file);
                 }
                 buffer.flip();
                 int pairs = buffer.remaining() / 2;
@@ -184,8 +178,8 @@ final class HeightMapData {
                 }
                 position += 2L * pairs;
             }
-            return new HeightMapData(width, height, values, false, 0, 0L);
         }
+        return new HeightMapData(width, height, values, false, 0, 0L);
     }
 
     /** A height map from a one-band raster (the value of a pixel is the Y level). */

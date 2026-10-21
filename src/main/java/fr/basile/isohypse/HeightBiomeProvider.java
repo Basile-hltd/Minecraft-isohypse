@@ -8,8 +8,8 @@ import org.jetbrains.annotations.NotNull;
 import java.util.List;
 
 /**
- * Biomes of the Realistic style: the altitude of the column in the height map and the depth under its surface decide
- * (see {@link BiomeLayout}): a surface biome, or a cave biome deep enough. Thread safe since the layout and the height map are read-only.
+ * Biomes of the Realistic style: the biome of the surface, or of a cave deep enough, read from the layers of
+ * {@code world.bin} (see {@link WorldData}). Thread safe since the file is only read.
  */
 final class HeightBiomeProvider extends BiomeProvider {
 
@@ -21,7 +21,7 @@ final class HeightBiomeProvider extends BiomeProvider {
 
     @Override
     public @NotNull Biome getBiome(@NotNull WorldInfo worldInfo, int x, int y, int z) {
-        return generator.biomeAt(worldInfo, x, y, z);
+        return generator.biomeAt(x, y, z);
     }
 
     @Override

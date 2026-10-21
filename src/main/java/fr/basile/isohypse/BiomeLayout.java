@@ -48,11 +48,11 @@ final class BiomeLayout {
     /** From this many blocks under the sea level, the ocean is a deep ocean. */
     private static final int DEEP_OCEAN = 12;
     /** A cave biome only starts this many blocks under the surface... */
-    private static final int CAVE_DEPTH = 8;
+    static final int CAVE_DEPTH = 8;
     /** ...and this many blocks under the sea level (so none above Y 63 - 8 = 55, whatever the surface). */
-    private static final int CAVE_SEA_MARGIN = 8;
+    static final int CAVE_SEA_MARGIN = 8;
     /** The cave biomes change at this Y: above, the upper shares, under, the lower ones. */
-    private static final int DEEP_DARK_Y = -24;
+    static final int DEEP_DARK_Y = -24;
     /** Above it, the share of the caves that have no biome of their own (the surface one)... */
     private static final double UPPER_NONE = 0.50;
     /** ...lush caves... */
