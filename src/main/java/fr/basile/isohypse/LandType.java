@@ -4,6 +4,7 @@ import org.bukkit.block.Biome;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.function.Supplier;
 
 /**
  * The land biomes of the game, sorted by the land zone of the intermediate map ({@link TempLayout}) they belong to:
@@ -15,21 +16,21 @@ import java.util.List;
 enum LandType {
 
     /** The shore. */
-    BEACH("beach", biomes(b(Biome.BEACH, 80), b(Biome.STONY_SHORE, 20))),
+    BEACH("beach", () -> biomes(b(Biome.BEACH, 80), b(Biome.STONY_SHORE, 20))),
     /** The hot and humid or dry lowlands. */
-    WARM("land_warm", biomes(b(Biome.DESERT, 23), b(Biome.SAVANNA, 18), b(Biome.JUNGLE, 11), b(Biome.SPARSE_JUNGLE, 9),
+    WARM("land_warm", () -> biomes(b(Biome.DESERT, 23), b(Biome.SAVANNA, 18), b(Biome.JUNGLE, 11), b(Biome.SPARSE_JUNGLE, 9),
             b(Biome.BADLANDS, 5), b(Biome.PLAINS, 7), b(Biome.SWAMP, 5), b(Biome.SAVANNA_PLATEAU, 4),
             b(Biome.WOODED_BADLANDS, 3), b(Biome.BAMBOO_JUNGLE, 3), b(Biome.WINDSWEPT_SAVANNA, 3),
             b(Biome.MANGROVE_SWAMP, 3), b(Biome.SUNFLOWER_PLAINS, 1), b(Biome.FLOWER_FOREST, 1))),
     /** The temperate biomes: the plains and the forests, and where they meet the mountains. dappled_forest only
      * exists in recent versions. */
-    NORMAL("land_normal", biomes(b(Biome.FOREST, 21), b(Biome.PLAINS, 20), b(Biome.TAIGA, 10), b(Biome.BIRCH_FOREST, 9),
+    NORMAL("land_normal", () -> biomes(b(Biome.FOREST, 21), b(Biome.PLAINS, 20), b(Biome.TAIGA, 10), b(Biome.BIRCH_FOREST, 9),
             b(Biome.DARK_FOREST, 8), b(BiomeLayout.biome("dappled_forest"), 8), b(Biome.SWAMP, 2), b(Biome.MEADOW, 4),
             b(Biome.FLOWER_FOREST, 3), b(Biome.OLD_GROWTH_PINE_TAIGA, 3), b(Biome.SUNFLOWER_PLAINS, 2),
             b(Biome.OLD_GROWTH_BIRCH_FOREST, 2), b(Biome.CHERRY_GROVE, 2), b(Biome.OLD_GROWTH_SPRUCE_TAIGA, 2),
             b(Biome.PALE_GARDEN, 1))),
     /** The snow and the mountains. */
-    COLD("land_cold", biomes(b(Biome.SNOWY_PLAINS, 18), b(Biome.SNOWY_TAIGA, 12), b(Biome.WINDSWEPT_HILLS, 10),
+    COLD("land_cold", () -> biomes(b(Biome.SNOWY_PLAINS, 18), b(Biome.SNOWY_TAIGA, 12), b(Biome.WINDSWEPT_HILLS, 10),
             b(Biome.SNOWY_SLOPES, 10), b(Biome.TAIGA, 9), b(Biome.JAGGED_PEAKS, 6), b(Biome.GROVE, 6),
             b(Biome.WINDSWEPT_FOREST, 5), b(Biome.FROZEN_PEAKS, 5), b(Biome.WINDSWEPT_GRAVELLY_HILLS, 4),
             b(Biome.OLD_GROWTH_PINE_TAIGA, 3), b(Biome.OLD_GROWTH_SPRUCE_TAIGA, 3), b(Biome.STONY_PEAKS, 3),
@@ -39,13 +40,14 @@ enum LandType {
     record Weighted(Biome biome, double weight) {}
 
     private final String id;
-    private final List<Weighted> weighted;
-    private final double totalWeight;
+    /** The biomes are looked up on the first use, so that the type can be used without a server (the biomes need it). */
+    private final Supplier<List<Weighted>> supplier;
+    private List<Weighted> weighted;
+    private double totalWeight;
 
-    LandType(String id, List<Weighted> weighted) {
+    LandType(String id, Supplier<List<Weighted>> supplier) {
         this.id = id;
-        this.weighted = weighted;
-        this.totalWeight = weighted.stream().mapToDouble(Weighted::weight).sum();
+        this.supplier = supplier;
     }
 
     /** A biome with the weight 1; null (a biome that this version of the game does not have) gives nothing. */
@@ -73,17 +75,22 @@ enum LandType {
     }
 
     /** The biomes of the type with their weights. */
-    List<Weighted> weighted() {
+    synchronized List<Weighted> weighted() {
+        if (weighted == null) {
+            weighted = supplier.get();
+            totalWeight = weighted.stream().mapToDouble(Weighted::weight).sum();
+        }
         return weighted;
     }
 
     /** The biomes of the type. */
     List<Biome> biomes() {
-        return weighted.stream().map(Weighted::biome).toList();
+        return weighted().stream().map(Weighted::biome).toList();
     }
 
     /** The chance of a weight in this type, in percent. */
     double percent(double weight) {
+        weighted();
         return 100 * weight / totalWeight;
     }
 }

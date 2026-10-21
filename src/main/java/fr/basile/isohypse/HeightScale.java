@@ -18,6 +18,8 @@ import java.nio.file.Files;
 import java.nio.file.StandardCopyOption;
 import java.util.Locale;
 import java.util.logging.Logger;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import java.util.stream.IntStream;
 
 /**
@@ -27,17 +29,17 @@ import java.util.stream.IntStream;
  * values. The map is never in memory: the source is memory-mapped, the result is written band by band.
  *
  * <p>One factor {@code s} (blocks per metre) is used in x, z and height. Two unknowns, {@code s} and the altitude
- * {@code a} (metres) that lies at the shore (S - 3, S the sea level):
+ * {@code a} (metres) that lies at the sea level S (the columns lower than S are under water):
  * <ul>
- * <li>the highest point reaches the ceiling: {@code shore + (max - a) * s = topY}, which gives {@code s} from
+ * <li>the highest point reaches the ceiling: {@code S + (max - a) * s = topY}, which gives {@code s} from
  * {@code a};</li>
- * <li>the sea (what is lower than {@code a}) covers a share of the map between {@link #SEA_SHARE_MIN} and
- * {@link #SEA_SHARE_MAX}. As the map is not cut, this share is the share of the samples lower than {@code a}, whatever
+ * <li>the sea (what is lower than {@code a}) covers a share of the map between the minimum share of the settings and
+ * the maximum share of the settings. As the map is not cut, this share is the share of the samples lower than {@code a}, whatever
  * {@code s}: {@code a} is a quantile of the altitudes, read in a histogram.</li>
  * </ul>
  * The first try is the scale that fills the whole range (the lowest point at {@code bottomY}, the highest at
  * {@code topY}); it is kept if the sea share is acceptable, otherwise {@code a} is the quantile of the aimed share
- * ({@link #SEA_SHARE_TARGET}).
+ * (the aimed share of the settings).
  *
  * <p>Once {@code heightmap.bin} is written, the source file is deleted: it is made again (downloaded again) when the
  * settings change, which {@link #upToDate} tells by comparing {@code settings.json} with the parameters asked.
@@ -48,17 +50,12 @@ final class HeightScale {
     static final String SETTINGS_FILE = "settings.json";
 
     /** Version of the format of the files and of this algorithm: part of the settings, so a change redoes the map. */
-    private static final int FORMAT = 1;
-    private static final int HEIGHTMAP_MAGIC = 0x49534F4D;
+    private static final int FORMAT = 2;
+    static final int HEIGHTMAP_MAGIC = 0x49534F4D;
     /** Bytes before the altitudes of heightmap_source.bin: magic, latitude, longitude, size, step, side. */
     private static final int SOURCE_HEADER = 4 + 8 + 8 + 4 + 4 + 4;
 
     static final int SEA_LEVEL = 63;
-    /** The lowest point of the area is this many blocks under the sea level when the sea share allows it. */
-    static final int OCEAN_DEPTH = 30;
-    static final double SEA_SHARE_MIN = 0.12;
-    static final double SEA_SHARE_TARGET = 0.17;
-    static final double SEA_SHARE_MAX = 0.22;
     /** No column is lower than this Y (a deeper sea floor is flattened). */
     static final int LOWEST_COLUMN = 0;
     /** Width in metres of a bin of the histogram of the altitudes. */
@@ -72,17 +69,36 @@ final class HeightScale {
     }
 
     /** The parameters that make {@code heightmap.bin}, for an area and a maximum height, as written in the settings. */
-    private static String inputs(double lat, double lon, int size, int maxHeight) {
+    private static String inputs(double lat, double lon, int size, int maxHeight, TerrainSettings settings) {
         int topY = maxHeight - 1;
         return inputs(lat, lon, size, HeightMapGenerator.stepFor(size), HeightMapGenerator.samplesFor(size), maxHeight, topY,
-                SEA_LEVEL - OCEAN_DEPTH, TempLayout.beachStart(SEA_LEVEL));
+                SEA_LEVEL - settings.oceanDepth(), settings);
+    }
+
+    /**
+     * Writes the parameters of the intermediate map in the {@code temp} block of {@code settings.json} (they do not
+     * make {@code heightmap.bin}, so changing them redoes nothing else).
+     */
+    static void updateTemp(File dir, TerrainSettings settings) throws IOException {
+        File file = new File(dir, SETTINGS_FILE);
+        if (!file.exists()) {
+            return;
+        }
+        String text = Files.readString(file.toPath(), StandardCharsets.UTF_8);
+        Matcher block = Pattern.compile("  \"temp\": \\{[^}]*\\}").matcher(text);
+        String updated = block.find() ? block.replaceFirst(Matcher.quoteReplacement(settings.tempJson()))
+                : text.replace("  \"results\":", settings.tempJson() + ",\n  \"results\":");
+        if (!updated.equals(text)) {
+            Files.writeString(file.toPath(), updated, StandardCharsets.UTF_8);
+        }
     }
 
     /** Whether {@code heightmap.bin} was made with exactly these parameters (and so needs nothing to be done). */
-    static boolean upToDate(File dir, double lat, double lon, int size, int maxHeight) throws IOException {
-        File settings = new File(dir, SETTINGS_FILE);
-        return new File(dir, HEIGHTMAP_FILE).exists() && settings.exists()
-                && Files.readString(settings.toPath(), StandardCharsets.UTF_8).contains(inputs(lat, lon, size, maxHeight));
+    static boolean upToDate(File dir, double lat, double lon, int size, int maxHeight, TerrainSettings settings)
+            throws IOException {
+        File settingsFile = new File(dir, SETTINGS_FILE);
+        return new File(dir, HEIGHTMAP_FILE).exists() && settingsFile.exists()
+                && Files.readString(settingsFile.toPath(), StandardCharsets.UTF_8).contains(inputs(lat, lon, size, maxHeight, settings));
     }
 
     private static float at(MemorySegment altitude, long index) {
@@ -95,17 +111,18 @@ final class HeightScale {
      * @param dir the plugin folder, which holds the source and receives the two files
      * @param maxHeight the maximum height of the world (the highest column is {@code maxHeight - 1})
      */
-    static void scale(File dir, double lat, double lon, int size, int maxHeight, Logger logger) throws IOException {
+    static void scale(File dir, double lat, double lon, int size, int maxHeight, TerrainSettings settings, Logger logger)
+            throws IOException {
         File sourceFile = new File(dir, HeightMapGenerator.SOURCE_FILE);
         File heightmap = new File(dir, HEIGHTMAP_FILE);
-        File settings = new File(dir, SETTINGS_FILE);
+        File settingsFile = new File(dir, SETTINGS_FILE);
         int r = HeightMapGenerator.stepFor(size);
         int n = HeightMapGenerator.samplesFor(size);
         int topY = maxHeight - 1;
-        int bottomY = SEA_LEVEL - OCEAN_DEPTH;
-        int shore = TempLayout.beachStart(SEA_LEVEL);
-        String inputs = inputs(lat, lon, size, maxHeight);
-        Files.deleteIfExists(settings.toPath()); // an interrupted run must not leave settings that match nothing
+        int bottomY = SEA_LEVEL - settings.oceanDepth();
+        int shore = SEA_LEVEL; // the pivot of the scale: the sea is what is lower than the sea level (the beach is the business of TempLayout)
+        String inputs = inputs(lat, lon, size, maxHeight, settings);
+        Files.deleteIfExists(settingsFile.toPath()); // an interrupted run must not leave settings that match nothing
 
         try (DataInputStream in = new DataInputStream(new FileInputStream(sourceFile))) {
             if (in.readInt() != HeightMapGenerator.SOURCE_MAGIC) {
@@ -147,8 +164,8 @@ final class HeightScale {
                 double fill = (topY - bottomY) / (max - min); // blocks per metre that fill the range
                 anchor = min + (shore - bottomY) / fill;
                 double share = share(histogram, min, count, anchor);
-                if (share < SEA_SHARE_MIN || share > SEA_SHARE_MAX) {
-                    anchor = quantile(histogram, min, count, SEA_SHARE_TARGET);
+                if (share < settings.seaShareMin() || share > settings.seaShareMax()) {
+                    anchor = quantile(histogram, min, count, settings.seaShareTarget());
                 }
             }
             scale = max - min < 1 ? 1 : (topY - shore) / (max - anchor); // blocks per metre
@@ -158,35 +175,35 @@ final class HeightScale {
         }
         Files.delete(sourceFile.toPath());
 
-        String json = "{\n" + inputs + ",\n  \"results\": {\n"
+        String json = "{\n" + inputs + ",\n" + settings.tempJson() + ",\n  \"results\": {\n"
                 + line("min_altitude_m", min, true) + line("max_altitude_m", max, true)
                 + line("anchor_altitude_m", anchor, true) + line("scale_blocks_per_m", scale, true)
                 + line("sea_share", seaShare, true) + line("width", side, true) + line("height", side, true)
                 + line("lowest_y", extremes[0], true) + line("highest_y", extremes[1], false)
                 + "  }\n}\n";
-        Files.writeString(settings.toPath(), json, StandardCharsets.UTF_8); // last: a stopped run leaves no valid settings
+        Files.writeString(settingsFile.toPath(), json, StandardCharsets.UTF_8); // last: a stopped run leaves no valid settings
         logger.info(String.format(Locale.ROOT, "%s : altitudes %.1f à %.1f m, échelle 1 m = %.3f bloc (x, z et hauteur), "
                         + "carte %dx%d blocs (pas rognée), hauteurs %d à %d (prévu %d à %d), mer %.1f %% de la carte "
                         + "(sous y=%d, l'altitude %.1f m est au bord de la mer)",
                 heightmap.getAbsolutePath(), min, max, scale, side, side, extremes[0], extremes[1], bottomY, topY,
                 100 * seaShare, shore, anchor));
-        logger.info(settings.getAbsolutePath() + " : paramètres utilisés, " + HeightMapGenerator.SOURCE_FILE + " supprimé");
+        logger.info(settingsFile.getAbsolutePath() + " : paramètres utilisés, " + HeightMapGenerator.SOURCE_FILE + " supprimé");
     }
 
     /** The parameters that make {@code heightmap.bin}, as the json written (and compared) in {@code settings.json}. */
     private static String inputs(double lat, double lon, int size, int step, int samples, int maxHeight, int topY,
-                                 int bottomY, int shore) {
+                                 int bottomY, TerrainSettings settings) {
         return "  \"format\": " + FORMAT + ",\n"
                 + "  \"source\": {\n"
                 + line("latitude", lat, true) + line("longitude", lon, true) + line("size_m", size, true)
                 + line("step_m", step, true) + line("samples_per_side", samples, false)
                 + "  },\n  \"world\": {\n"
                 + line("max_height", maxHeight, true) + line("top_y", topY, true) + line("sea_level", SEA_LEVEL, true)
-                + line("shore_y", shore, true) + line("ocean_depth", OCEAN_DEPTH, true)
+                + line("ocean_depth", settings.oceanDepth(), true)
                 + line("bottom_y", bottomY, true) + line("lowest_column", LOWEST_COLUMN, false)
                 + "  },\n  \"sea_share\": {\n"
-                + line("min", SEA_SHARE_MIN, true) + line("target", SEA_SHARE_TARGET, true)
-                + line("max", SEA_SHARE_MAX, false) + "  }";
+                + line("min", settings.seaShareMin(), true) + line("target", settings.seaShareTarget(), true)
+                + line("max", settings.seaShareMax(), false) + "  }";
     }
 
     private static String line(String key, Number value, boolean comma) {

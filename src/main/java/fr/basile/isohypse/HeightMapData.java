@@ -4,6 +4,9 @@ import javax.imageio.ImageIO;
 import java.awt.image.Raster;
 import java.io.File;
 import java.io.IOException;
+import java.nio.ByteBuffer;
+import java.nio.channels.FileChannel;
+import java.nio.file.StandardOpenOption;
 import java.util.stream.IntStream;
 
 /**
@@ -150,6 +153,39 @@ final class HeightMapData {
             throw new IOException("Height map illisible : " + file);
         }
         return from(image.getRaster(), tiling, blendWidth, seed);
+    }
+
+    /** The height map of {@code heightmap.bin} (see {@link HeightScale}), not tiled: it repeats as it is. */
+    static HeightMapData fromBin(File file) throws IOException {
+        try (FileChannel channel = FileChannel.open(file.toPath(), StandardOpenOption.READ)) {
+            ByteBuffer header = ByteBuffer.allocate(12);
+            if (channel.read(header, 0) != 12) {
+                throw new IOException("heightmap.bin trop court : " + file);
+            }
+            header.flip();
+            if (header.getInt() != HeightScale.HEIGHTMAP_MAGIC) {
+                throw new IOException("Ce n'est pas un heightmap.bin : " + file);
+            }
+            int width = header.getInt();
+            int height = header.getInt();
+            int[] values = new int[width * height];
+            ByteBuffer buffer = ByteBuffer.allocateDirect(1 << 20);
+            long position = 12;
+            int index = 0;
+            while (index < values.length) {
+                buffer.clear();
+                if (channel.read(buffer, position) <= 0) {
+                    throw new IOException("heightmap.bin trop court : " + file);
+                }
+                buffer.flip();
+                int pairs = buffer.remaining() / 2;
+                for (int i = 0; i < pairs && index < values.length; i++) {
+                    values[index++] = buffer.getShort();
+                }
+                position += 2L * pairs;
+            }
+            return new HeightMapData(width, height, values, false, 0, 0L);
+        }
     }
 
     /** A height map from a one-band raster (the value of a pixel is the Y level). */

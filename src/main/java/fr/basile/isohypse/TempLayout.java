@@ -6,43 +6,32 @@ import java.util.List;
  * The intermediate map: seven zones derived from the height map alone, with no link to the Minecraft biomes (yet).
  * With S the sea level, and L the highest point of the height map:
  * <ul>
- * <li>the sea, the columns lower than S - 3, in the three {@link OceanType}s, that only depend on the distance to the
- * edge of the sea (not on the depth): ocean_warm along the shore, ocean_normal beyond it, ocean_cold in the open. The two
- * distances are searched so that the three zones cover the same share (a third) of the sea columns. The distance is
- * first filtered by a very wide low-pass filter ({@link HeightSmoothing}, about {@link #OCEAN_BLUR} blocks), so the
- * borders are smooth;</li>
- * <li>beach: S - 3 to S + 5, but more than {@link #BEACH_INLAND_DISTANCE} blocks from the nearest sea it is warm
- * (decided on the raw heights, before any filtering);</li>
- * <li>the land above, from S + 5 to L, cut in three so that warm, normal and cold cover {@link #WARM_SHARE},
- * {@link #NORMAL_SHARE} and the rest of the land columns of the height map (the limits are searched), told apart on
- * a narrower low-pass filtering of the land ({@link #LAND_BLUR} blocks).</li>
+ * <li>the sea, the columns lower than S - {@code beachDepth}, in the three {@link OceanType}s, that only depend on the
+ * distance to the edge of the sea (not on the depth): ocean_warm along the shore, ocean_normal beyond it, ocean_cold in
+ * the open. The two distances are searched so that the three zones cover the shares {@code warmOceanShare},
+ * {@code normalOceanShare} and the rest of the sea columns. The distance is first filtered by a very wide low-pass
+ * filter ({@link HeightSmoothing}, about {@code oceanBlur} blocks), so the borders are smooth;</li>
+ * <li>beach: S - {@code beachDepth} to S + {@code beachHeight}, but more than {@code beachInlandDistance} blocks from
+ * the nearest sea it is warm (decided on the raw heights, before any filtering);</li>
+ * <li>the land above, from S + {@code beachHeight} to L, cut in three so that warm, normal and cold cover
+ * {@code warmLandShare}, {@code normalLandShare} and the rest of the land columns of the height map (the limits are
+ * searched), told apart on a narrower low-pass filtering of the land ({@code landBlur} blocks).</li>
  * </ul>
+ * All of these are the {@link TerrainSettings} (the defaults for the callers that give none).
  */
 final class TempLayout {
 
     /** A zone, the colour that stands for it, and the Y range it covers (for the glossary). */
     record Zone(String name, int rgb, String range) {}
 
-    /** A beach column farther than this from the nearest sea is warm land. */
-    static final int BEACH_INLAND_DISTANCE = 20;
-    /** About the standard deviation, in blocks, of the low-pass filter of the distance to the shore in the sea... */
-    static final int OCEAN_BLUR = 150;
-    /** ...and of the land (narrower). */
-    static final int LAND_BLUR = 50;
-
-    /** The share of the land columns that is warm... */
-    static final double WARM_SHARE = 0.35;
-    /** ...and normal; the rest of the land is cold. */
-    static final double NORMAL_SHARE = 0.45;
-
-    /** The columns lower than this Y are the ocean (the beach starts here), for a sea level. */
+    /** The columns lower than this Y are the ocean (the beach starts here), for a sea level, with the default settings. */
     static int beachStart(int seaLevel) {
-        return seaLevel - 3;
+        return TerrainSettings.DEFAULTS.beachStart(seaLevel);
     }
 
-    /** The land starts from this Y (the beach ends here), for a sea level. */
+    /** The land starts from this Y (the beach ends here), for a sea level, with the default settings. */
     static int landStart(int seaLevel) {
-        return seaLevel + 5;
+        return TerrainSettings.DEFAULTS.landStart(seaLevel);
     }
 
     /**
@@ -50,19 +39,24 @@ final class TempLayout {
      * takes a few seconds on a big map.
      */
     static TempLayout build(HeightMapData data, int seaLevel) {
-        int beachStart = beachStart(seaLevel);
-        int landStart = landStart(seaLevel);
+        return build(data, seaLevel, TerrainSettings.DEFAULTS);
+    }
+
+    /** The layout of a height map with these settings. */
+    static TempLayout build(HeightMapData data, int seaLevel, TerrainSettings settings) {
+        int beachStart = settings.beachStart(seaLevel);
+        int landStart = settings.landStart(seaLevel);
         // The sea zones: the distance of every sea column to the edge of the sea (what is not sea), filtered widely.
         ShoreDistance shore = new ShoreDistance(data, v -> v >= beachStart, 0);
         HeightSmoothing seaSmoothing = new HeightSmoothing(data, shore::quarterBlocks,
-                (column, row) -> data.valueAt(column, row) < beachStart, OCEAN_BLUR);
-        ShoreDistance seaDistance = new ShoreDistance(data, v -> v < beachStart, BEACH_INLAND_DISTANCE);
+                (column, row) -> data.valueAt(column, row) < beachStart, settings.oceanBlur());
+        ShoreDistance seaDistance = new ShoreDistance(data, v -> v < beachStart, settings.beachInlandDistance());
         // The land, and the beach columns too far from the sea (they are warm land, decided before the filtering).
         HeightSmoothing landSmoothing = new HeightSmoothing(data, data::valueAt, (column, row) -> {
             int v = data.valueAt(column, row);
             return v >= landStart || v >= beachStart && seaDistance.isFar(column - data.width() / 2, row - data.height() / 2);
-        }, LAND_BLUR);
-        return new TempLayout(seaLevel, data.highest(), seaSmoothing, landSmoothing, seaDistance);
+        }, settings.landBlur());
+        return new TempLayout(seaLevel, data.highest(), seaSmoothing, landSmoothing, seaDistance, settings);
     }
 
     private final Zone deepSea;
@@ -90,18 +84,18 @@ final class TempLayout {
      * @param seaDistance which columns are far enough from the nearest sea, to turn the inland beach to warm land
      */
     TempLayout(int seaLevel, int highest, HeightSmoothing seaSmoothing, HeightSmoothing landSmoothing,
-               ShoreDistance seaDistance) {
+               ShoreDistance seaDistance, TerrainSettings settings) {
         this.seaDistance = seaDistance;
         this.seaSmoothing = seaSmoothing;
         this.landSmoothing = landSmoothing;
-        this.beachStart = beachStart(seaLevel);
-        this.landStart = landStart(seaLevel);
+        this.beachStart = settings.beachStart(seaLevel);
+        this.landStart = settings.landStart(seaLevel);
         int[] sea = seaSmoothing.histogram();
-        this.warmOceanLimit = heightAtShare(sea, 0, 1.0 / 3);
-        this.oceanLimit = heightAtShare(sea, 0, 2.0 / 3);
+        this.warmOceanLimit = heightAtShare(sea, 0, settings.warmOceanShare());
+        this.oceanLimit = heightAtShare(sea, 0, settings.warmOceanShare() + settings.normalOceanShare());
         int[] land = landSmoothing.histogram();
-        this.warmTop = heightAtShare(land, landStart, WARM_SHARE);
-        this.normalTop = heightAtShare(land, landStart, WARM_SHARE + NORMAL_SHARE);
+        this.warmTop = heightAtShare(land, landStart, settings.warmLandShare());
+        this.normalTop = heightAtShare(land, landStart, settings.warmLandShare() + settings.normalLandShare());
         int near = Math.round(warmOceanLimit / 4f);
         int far = Math.round(oceanLimit / 4f);
         this.deepSea = new Zone(OceanType.COLD.id(), 0x14347a, "à plus de " + far + " du bord");

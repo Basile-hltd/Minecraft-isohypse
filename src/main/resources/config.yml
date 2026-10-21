@@ -6,6 +6,26 @@ realistic:
   tiling: false       # true = la carte (si elle est carrée) est entourée de huit copies tournées / miroitées aux raccords lissés ; false = elle est simplement répétée telle quelle
   blend_width: 200    # blocs : demi-largeur de la bande lissée de chaque côté d'un raccord entre deux copies de la carte (0 = pas de lissage)
 
+  # Mise à l'échelle des altitudes réelles en hauteurs de blocs (heightmap.bin). Les changer refait la height map.
+  scale:
+    ocean_depth: 30          # blocs sous le niveau de la mer où est mis le point le plus bas, si la part de mer le permet
+    sea_share_min: 0.12      # la mer (les colonnes sous le niveau de la mer) couvre au moins cette part de la carte...
+    sea_share_target: 0.17   # ...cette part est visée quand l'échelle qui remplit tout l'intervalle ne convient pas...
+    sea_share_max: 0.22      # ...et au plus celle-ci
+
+  # Carte intermédiaire (temp_map) : zones tirées de la seule altitude. N'a pas besoin de refaire la height map,
+  # ne change rien à la height map : seules les zones sont recalculées (relancer le serveur, puis Recharger dans le viewer).
+  temp:
+    beach_depth: 3             # blocs sous le niveau de la mer où la plage commence (la mer s'arrête)
+    beach_height: 5            # blocs au-dessus du niveau de la mer où la plage finit (la terre commence)
+    beach_inland_distance: 20  # une plage à plus de tant de blocs de la mer est de la terre chaude
+    ocean_blur: 150            # blocs, à peu près l'écart type du flou de la distance au bord, dans la mer...
+    land_blur: 50              # ...et sur la terre (plus étroit)
+    warm_ocean_share: 0.3333   # part des colonnes de mer en ocean_warm (le long du bord)...
+    normal_ocean_share: 0.3333 # ...en ocean_normal ; le reste est ocean_cold (le large)
+    warm_land_share: 0.35      # part des colonnes de terre en warm (les plus basses)...
+    normal_land_share: 0.45    # ...en normal ; le reste est cold (les plus hautes)
+
 # Monde : hauteur maximale de l'overworld (le sol reste à y=-64). Arrondie à la valeur la plus proche acceptée par le jeu :
 # un multiple de 16 de 128 à 2032 ; 320 est la valeur de Minecraft (rien n'est changé). Ne s'applique qu'à un monde qui
 # n'existe pas encore : le plugin écrit un datapack au lancement du serveur.

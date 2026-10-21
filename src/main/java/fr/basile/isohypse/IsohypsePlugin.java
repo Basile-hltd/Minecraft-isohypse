@@ -65,18 +65,37 @@ public final class IsohypsePlugin extends JavaPlugin implements Listener {
         int size = getConfig().getInt("realistic.size");
         int maxHeight = WorldHeight.round(getConfig().getInt("world.max_height", WorldHeight.VANILLA_MAX_HEIGHT));
         try {
-            if (HeightScale.upToDate(folder, latitude, longitude, size, maxHeight)) {
+            TerrainSettings settings = terrainSettings();
+            if (HeightScale.upToDate(folder, latitude, longitude, size, maxHeight, settings)) {
+                HeightScale.updateTemp(folder, settings); // the parameters of the intermediate map do not make the height map
                 getLogger().info("Realistic: " + HeightScale.HEIGHTMAP_FILE + " was made with these settings ("
                         + HeightScale.SETTINGS_FILE + "), nothing to do");
                 return;
             }
             new HeightMapGenerator(getLogger(), folder.toPath().resolve("dem-cache")).fetchSource(latitude, longitude, size,
                     new File(folder, HeightMapGenerator.SOURCE_FILE));
-            HeightScale.scale(folder, latitude, longitude, size, maxHeight, getLogger());
+            HeightScale.scale(folder, latitude, longitude, size, maxHeight, settings, getLogger());
         } catch (Exception e) {
             getLogger().log(Level.SEVERE, "Realistic: the terrain data cannot be made, stopping the server", e);
             getServer().shutdown();
         }
+    }
+
+    /** The parameters of the terrain computation from {@code realistic.scale} and {@code realistic.temp} of the config. */
+    private TerrainSettings terrainSettings() {
+        TerrainSettings d = TerrainSettings.DEFAULTS;
+        var c = getConfig();
+        return new TerrainSettings(c.getInt("realistic.scale.ocean_depth", d.oceanDepth()),
+                c.getDouble("realistic.scale.sea_share_min", d.seaShareMin()),
+                c.getDouble("realistic.scale.sea_share_target", d.seaShareTarget()),
+                c.getDouble("realistic.scale.sea_share_max", d.seaShareMax()),
+                c.getInt("realistic.temp.beach_depth", d.beachDepth()), c.getInt("realistic.temp.beach_height", d.beachHeight()),
+                c.getInt("realistic.temp.beach_inland_distance", d.beachInlandDistance()),
+                c.getInt("realistic.temp.ocean_blur", d.oceanBlur()), c.getInt("realistic.temp.land_blur", d.landBlur()),
+                c.getDouble("realistic.temp.warm_ocean_share", d.warmOceanShare()),
+                c.getDouble("realistic.temp.normal_ocean_share", d.normalOceanShare()),
+                c.getDouble("realistic.temp.warm_land_share", d.warmLandShare()),
+                c.getDouble("realistic.temp.normal_land_share", d.normalLandShare()));
     }
 
     /** Prints the real-world point (latitude, longitude) that the Realistic style puts at x=0, z=0. */

@@ -1,22 +1,33 @@
 #!/usr/bin/env python3
-"""Viewer of the height map of the Realistic world, for a human: land in grey, the sea in blue or not.
+"""Viewer of the height map of the Realistic world, for a human: land in grey, the sea in blue or not, and the zones of
+the intermediate map (temp_map) on top, each one shown or hidden.
 
 Reads the files the plugin writes in plugins/Isohypse/ at startup:
     heightmap.bin   Y of the top block of every column (16 bits, one per block, read from the disk, never loaded whole)
     settings.json   the parameters used to make it, and the result (size, lowest and highest Y, sea level)
 
+The zones are computed by the Java code of the plugin (class TempMapTool), the same as the server uses, so there is one
+source of truth: the viewer runs it (java -cp build/... fr.basile.isohypse.TempMapTool <folder>) and shows the result
+(temp_map.bin and temp_map.json, written next to the height map). It needs the plugin compiled (python
+tools/local_run.py builds it, or gradle build) and Java 25 (JAVA_HOME, the PATH or tmp/jdk-*).
+
 Usage :
     pip install -r tools/requirements.txt
-    python tools/map_viewer.py [folder]        (default : tmp/server/plugins/Isohypse)
+    python tools/map_viewer.py [folder] [--memory 4G]       (default folder : tmp/server/plugins/Isohypse)
 
 Mouse : wheel = zoom, drag = move, double click = copy a /tp command to the clipboard.
-The "Recharger" button reads both files again (after the server made a new map). The files are only opened to read what
+The "Recharger" button reads the files again (after the server made a new map). The files are only opened to read what
 is on screen, never kept open, so the server can replace them while the viewer is running.
 """
 import argparse
 import json
+import os
+import re
+import shutil
 import struct
+import subprocess
 import sys
+import threading
 import tkinter as tk
 from pathlib import Path
 from tkinter import ttk
@@ -26,10 +37,14 @@ from PIL import Image, ImageTk
 
 ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_DIR = ROOT / "tmp" / "server" / "plugins" / "Isohypse"
+IS_WINDOWS = os.name == "nt"
+JAVA_VERSION = 25  # the toolchain of build.gradle.kts
 
 HEIGHTMAP_MAGIC = 0x49534F4D
-HEADER = 12          # magic, width, height (big-endian ints), then the big-endian 16-bit heights
+ZONES_MAGIC = 0x49534F54
+HEADER = 12          # magic, width, height (big-endian ints), then the data
 MAX_SCALE = 16.0
+TOOL_CLASS = "fr.basile.isohypse.TempMapTool"
 
 SEA_LIGHT = np.array([130, 200, 255], dtype=np.float32)   # shallow sea
 SEA_DARK = np.array([10, 40, 120], dtype=np.float32)      # deep sea
@@ -59,14 +74,69 @@ def load(folder: Path):
         raise LoadError(f"cannot read the height map: {e}") from e
 
 
+def rgb_of(value: int):
+    return (value >> 16) & 0xFF, (value >> 8) & 0xFF, value & 0xFF
+
+
+def hex_of(value: int) -> str:
+    return "#%06x" % value
+
+
+# --- the Java tool -----------------------------------------------------------
+def java_major(java: str) -> int:
+    try:
+        out = subprocess.run([java, "-version"], capture_output=True, text=True).stderr
+    except OSError:
+        return 0
+    m = re.search(r'version "(\d+)', out)
+    return int(m.group(1)) if m else 0
+
+
+def find_java():
+    exe = "java.exe" if IS_WINDOWS else "java"
+    candidates = []
+    if os.environ.get("JAVA_HOME"):
+        candidates.append(Path(os.environ["JAVA_HOME"]) / "bin" / exe)
+    on_path = shutil.which("java")
+    if on_path:
+        candidates.append(Path(on_path))
+    for jdk in sorted((ROOT / "tmp").glob("jdk-*")):
+        candidates += [jdk / "bin" / exe, jdk / "Contents" / "Home" / "bin" / exe]
+    for candidate in candidates:
+        if candidate.is_file() and java_major(str(candidate)) >= JAVA_VERSION:
+            return str(candidate)
+    return None
+
+
+def find_classpath():
+    """The most recent build of the plugin: the compiled classes, or the newest jar."""
+    found = []
+    classes = ROOT / "build" / "classes" / "java" / "main"
+    tool = classes / "fr" / "basile" / "isohypse" / "TempMapTool.class"
+    if tool.is_file():
+        found.append((tool.stat().st_mtime, str(classes)))
+    for jar in (ROOT / "build" / "libs").glob("isohypse-*.jar"):
+        if not jar.name.endswith(("-sources.jar", "-javadoc.jar")):
+            found.append((jar.stat().st_mtime, str(jar)))
+    return max(found)[1] if found else None
+
+
 class Viewer:
-    def __init__(self, root: tk.Tk, folder: Path, settings, width, height):
+    def __init__(self, root: tk.Tk, folder: Path, memory: str, settings, width, height):
         self.root = root
-        self.path = folder / "heightmap.bin"
         self.folder = folder
+        self.memory = memory
+        self.path = folder / "heightmap.bin"
+        self.zones_path = folder / "temp_map.bin"
 
         self.show_sea = tk.BooleanVar(value=True)
+        self.show_zones = tk.BooleanVar(value=False)
+        self.zone_opacity = tk.DoubleVar(value=70)
         self.info = tk.StringVar()
+        self.zones = None           # the zones of temp_map.json, None until loaded
+        self.zone_vars = []
+        self.zone_lut = np.zeros((256, 3), dtype=np.float32)
+        self.computing = False
         self.scale = 1.0
         self.ox = 0.0   # map column at the left edge of the canvas
         self.oy = 0.0   # map row at the top edge
@@ -79,6 +149,13 @@ class Viewer:
         ttk.Checkbutton(panel, text="Mer en bleu", variable=self.show_sea, command=self.redraw).pack(anchor="w")
         ttk.Button(panel, text="Recharger", command=self.reload).pack(anchor="w", pady=(12, 0))
         ttk.Label(panel, justify="left", textvariable=self.info).pack(anchor="w", pady=(16, 0))
+        ttk.Separator(panel).pack(fill="x", pady=12)
+        ttk.Checkbutton(panel, text="Zones (temp_map)", variable=self.show_zones,
+                        command=self.on_zones_toggle).pack(anchor="w")
+        ttk.Label(panel, text="Opacité des zones").pack(anchor="w", pady=(8, 0))
+        ttk.Scale(panel, from_=0, to=100, variable=self.zone_opacity, command=lambda v: self.redraw()).pack(fill="x")
+        self.zone_frame = ttk.Frame(panel)
+        self.zone_frame.pack(anchor="w", pady=(8, 0))
 
         self.canvas = tk.Canvas(root, bg="#202020", highlightthickness=0)
         self.canvas.pack(side="left", fill="both", expand=True)
@@ -121,22 +198,132 @@ class Viewer:
         self.apply(settings, width, height)
         if resized:
             self.fit()
+        self.zones = None
+        self.clear_zone_list()
         self.status.set("rechargé")
+        if self.show_zones.get():
+            self.ensure_zones()
+        self.redraw()
+
+    # --- the zones --------------------------------------------------------
+    def clear_zone_list(self):
+        for child in self.zone_frame.winfo_children():
+            child.destroy()
+        self.zone_vars = []
+
+    def on_zones_toggle(self):
+        if self.show_zones.get():
+            self.ensure_zones()
+        self.redraw()
+
+    def zones_fresh(self):
+        """Whether temp_map.bin and temp_map.json exist, are newer than the height map and its settings, and fit it."""
+        zones_json = self.folder / "temp_map.json"
+        if not (self.zones_path.is_file() and zones_json.is_file()):
+            return False
+        made = min(self.zones_path.stat().st_mtime, zones_json.stat().st_mtime)
+        if made < max(self.path.stat().st_mtime, (self.folder / "settings.json").stat().st_mtime):
+            return False
+        try:
+            with open(self.zones_path, "rb") as f:
+                magic, width, height = struct.unpack(">iii", f.read(HEADER))
+        except (OSError, struct.error):
+            return False
+        return magic == ZONES_MAGIC and (width, height) == (self.width, self.height)
+
+    def ensure_zones(self):
+        """Show the zones: read them if they are fresh, else have the Java tool compute them."""
+        if self.zones is not None:
+            return
+        if self.zones_fresh():
+            self.load_zones()
+        else:
+            self.compute_zones()
+
+    def load_zones(self):
+        data = json.loads((self.folder / "temp_map.json").read_text(encoding="utf-8"))
+        self.zones = data["zones"]
+        self.clear_zone_list()
+        for i, zone in enumerate(self.zones):
+            self.zone_lut[i] = rgb_of(zone["rgb"])
+            var = tk.BooleanVar(value=True)
+            self.zone_vars.append(var)
+            line = ttk.Frame(self.zone_frame)
+            line.pack(anchor="w", fill="x")
+            tk.Label(line, bg=hex_of(zone["rgb"]), width=2).pack(side="left", padx=(0, 4))
+            ttk.Checkbutton(line, text=f"{zone['name']}  ({zone['range']})", variable=var,
+                            command=self.redraw).pack(side="left")
+
+    def compute_zones(self):
+        if self.computing:
+            return
+        java = find_java()
+        if not java:
+            self.status.set(f"Java {JAVA_VERSION} introuvable (JAVA_HOME, PATH ou tmp/jdk-*)")
+            return
+        classpath = find_classpath()
+        if not classpath:
+            self.status.set("plugin non compilé (build/) : lancer python tools/local_run.py ou gradle build")
+            return
+        self.computing = True
+        self.status.set("calcul des zones par le code Java du plugin…")
+        result = {}
+
+        def run():
+            process = subprocess.Popen([java, f"-Xmx{self.memory}", "-Djava.awt.headless=true", "-cp", classpath,
+                                        TOOL_CLASS, str(self.folder)],
+                                       stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding="utf-8",
+                                       errors="replace")
+            lines = []
+            for line in process.stdout:
+                lines.append(line.rstrip())
+                result["last"] = lines[-1]
+            result["code"] = process.wait()
+            result["output"] = "\n".join(lines[-15:])
+
+        threading.Thread(target=run, daemon=True).start()
+        self.root.after(300, lambda: self.poll_compute(result))
+
+    def poll_compute(self, result):
+        if "code" not in result:
+            if "last" in result:
+                self.status.set(f"calcul des zones : {result['last']}")
+            self.root.after(300, lambda: self.poll_compute(result))
+            return
+        self.computing = False
+        if result["code"] != 0:
+            self.status.set("le calcul des zones a échoué (voir le terminal)")
+            print(result["output"], file=sys.stderr)
+            return
+        self.status.set("zones calculées")
+        self.load_zones()
         self.redraw()
 
     # --- reading the map --------------------------------------------------
-    def region(self, row0, row1, col0, col1, step):
-        """The heights of a part of the map (every `step` blocks), read from the disk; the file is closed after."""
-        heights = np.memmap(self.path, dtype=">i2", mode="r", offset=HEADER, shape=(self.height, self.width))
+    def region(self, path, dtype, row0, row1, col0, col1, step):
+        """A part of a map file (every `step` blocks), read from the disk; the file is closed after."""
+        data = np.memmap(path, dtype=dtype, mode="r", offset=HEADER, shape=(self.height, self.width))
         try:
-            return np.array(heights[row0:row1:step, col0:col1:step], dtype=np.float32)
+            return np.array(data[row0:row1:step, col0:col1:step])
         finally:
-            del heights
+            del data
+
+    def value_at(self, path, size, fmt, column, row):
+        with open(path, "rb") as f:
+            f.seek(HEADER + size * (row * self.width + column))
+            return struct.unpack(fmt, f.read(size))[0]
 
     def height_at(self, column, row):
-        with open(self.path, "rb") as f:
-            f.seek(HEADER + 2 * (row * self.width + column))
-            return struct.unpack(">h", f.read(2))[0]
+        return self.value_at(self.path, 2, ">h", column, row)
+
+    def zone_at(self, column, row):
+        if self.zones is None or not self.zones_path.is_file():
+            return None
+        try:
+            index = self.value_at(self.zones_path, 1, ">B", column, row)
+        except (OSError, struct.error):
+            return None
+        return self.zones[index]["name"] if index < len(self.zones) else None
 
     # --- view -------------------------------------------------------------
     def fit(self):
@@ -179,10 +366,11 @@ class Viewer:
     def on_move(self, event):
         hit = self.column_at(event.x, event.y)
         if not hit:
-            self.status.set("")
             return
         i, j = hit
-        self.status.set(f"x {i - self.width // 2}  z {j - self.height // 2}  |  y {self.height_at(i, j)}")
+        text = f"x {i - self.width // 2}  z {j - self.height // 2}  |  y {self.height_at(i, j)}"
+        zone = self.zone_at(i, j) if self.show_zones.get() else None
+        self.status.set(text + (f"  |  {zone}" if zone else ""))
 
     def on_double(self, event):
         hit = self.column_at(event.x, event.y)
@@ -204,7 +392,7 @@ class Viewer:
             return
         step = max(1, int(1 / self.scale))  # zoomed out: one block out of `step`
         try:
-            sub = self.region(iy0, iy1, ix0, ix1, step)
+            sub = self.region(self.path, ">i2", iy0, iy1, ix0, ix1, step).astype(np.float32)
         except (OSError, ValueError) as e:  # e.g. the server is writing a new map
             self.status.set(f"carte illisible pour le moment ({e}), essayer Recharger")
             return
@@ -220,6 +408,16 @@ class Viewer:
             grey = np.clip((sub - self.lowest) / max(1, self.highest - self.lowest), 0, 1) * 255
             rgb = np.repeat(grey[..., None], 3, axis=2)
 
+        if self.show_zones.get() and self.zones is not None:
+            try:
+                ids = self.region(self.zones_path, "u1", iy0, iy1, ix0, ix1, step)
+            except (OSError, ValueError):
+                ids = None
+            if ids is not None:
+                shown = np.array([v.get() for v in self.zone_vars] + [False] * (256 - len(self.zone_vars)))
+                alpha = self.zone_opacity.get() / 100
+                rgb = np.where(shown[ids][..., None], (1 - alpha) * rgb + alpha * self.zone_lut[ids], rgb)
+
         image = Image.fromarray(rgb.astype(np.uint8))
         size = (max(1, round(sub.shape[1] * step * self.scale)), max(1, round(sub.shape[0] * step * self.scale)))
         self.photo = ImageTk.PhotoImage(image.resize(size, Image.NEAREST))
@@ -230,6 +428,7 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("folder", nargs="?", type=Path, default=DEFAULT_DIR,
                     help="plugins/Isohypse folder (default: tmp/server/plugins/Isohypse)")
+    ap.add_argument("--memory", default="4G", help="memory of the Java tool that computes the zones (default: 4G)")
     args = ap.parse_args()
     try:
         settings, width, height = load(args.folder)
@@ -239,7 +438,7 @@ def main():
     root = tk.Tk()
     root.title(f"Isohypse : {args.folder}")
     root.geometry("1400x900")
-    Viewer(root, args.folder, settings, width, height)
+    Viewer(root, args.folder, args.memory, settings, width, height)
     root.mainloop()
 
 
