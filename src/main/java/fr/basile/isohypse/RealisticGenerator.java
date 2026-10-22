@@ -15,13 +15,13 @@ import org.bukkit.generator.structure.GeneratedStructure;
 import org.bukkit.generator.structure.StructurePiece;
 import org.bukkit.util.BoundingBox;
 
+
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Random;
-import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.logging.Level;
 
@@ -54,10 +54,7 @@ public final class RealisticGenerator extends ChunkGenerator {
     private final int blend;
     /** Radius in blocks of the rounded corners of each flat (config {@code structures.corner_radius}). */
     private final int cornerRadius;
-    /** The structures already logged (their name and box), so that each is told once and not for every chunk. */
-    private final Set<String> logged = ConcurrentHashMap.newKeySet();
     private volatile boolean lookupFailed;
-    private volatile boolean lookupWorked;
 
     RealisticGenerator(IsohypsePlugin plugin) {
         this.plugin = plugin;
@@ -125,49 +122,11 @@ public final class RealisticGenerator extends ChunkGenerator {
                     }
                 }
             }
-            if (!lookupWorked) {
-                lookupWorked = true;
-                plugin.getLogger().info("Structures: World#getStructures answers while the noise is made (chunk " + chunkX
-                        + ", " + chunkZ + ": " + structures.size() + " flattened structure(s) within " + radius + " chunk(s))");
-            }
             List<Flat> flats = new ArrayList<>();
             for (Map.Entry<String, GeneratedStructure> entry : structures.entrySet()) {
                 GeneratedStructure structure = entry.getValue();
                 String name = names.get(entry.getKey());
-                List<StructurePiece> pieces = List.copyOf(structure.getPieces());
-                BoundingBox first = pieces.isEmpty() ? structure.getBoundingBox() : pieces.get(0).getBoundingBox();
-                // The igloo is put on the middle of its chunk; a jigsaw structure (the outpost, the camps) on the ground at the
-                // middle of its first piece, wherever that is: measured there, not at the middle of the chunk.
-                int startX = name.equals("igloo") ? Math.floorDiv((int) Math.floor(first.getCenterX()), 16) * 16 + 8
-                        : ((int) Math.floor(first.getMinX()) + (int) Math.ceil(first.getMaxX()) - 1) / 2;
-                int startZ = name.equals("igloo") ? Math.floorDiv((int) Math.floor(first.getCenterZ()), 16) * 16 + 8
-                        : ((int) Math.floor(first.getMinZ()) + (int) Math.ceil(first.getMaxZ()) - 1) / 2;
-                int terrain = Math.max(data.heightAt(startX, startZ), SEA_LEVEL);
-                // The game puts the first piece of a jigsaw structure with its bottom on the ground it measured: that Y is read
-                // from the piece itself rather than worked out again.
-                int level = name.equals("igloo") || pieces.isEmpty() ? terrain : (int) Math.floor(first.getMinY());
-                for (StructurePiece piece : pieces) {
-                    // The plates of an outpost follow the ground under their own middle (terrain_matching): each is flat at
-                    // its own bottom, which is the ground the game found there; the cages and tents on a plate stand on it.
-                    // The camps are rigid, whole at the level of their first piece.
-                    int pieceLevel = name.equals("pillager_outpost") ? (int) Math.floor(piece.getBoundingBox().getMinY()) : level;
-                    flats.add(flat(piece.getBoundingBox(), pieceLevel));
-                }
-                if (pieces.isEmpty()) {
-                    flats.add(flat(structure.getBoundingBox(), level));
-                }
-                if (logged.add(name + structure.getBoundingBox())) {
-                    StringBuilder boxes = new StringBuilder();
-                    for (StructurePiece piece : pieces) {
-                        BoundingBox b = piece.getBoundingBox();
-                        boxes.append(" [x ").append((int) b.getMinX()).append("..").append((int) b.getMaxX()).append(" y ")
-                                .append((int) b.getMinY()).append("..").append((int) b.getMaxY()).append(" z ")
-                                .append((int) b.getMinZ()).append("..").append((int) b.getMaxZ()).append(']');
-                    }
-                    plugin.getLogger().info("Structures: " + name + " start at " + startX + ", " + startZ + ": ground flat at y="
-                            + level + " (terrain there " + terrain + ", first piece minY " + (int) first.getMinY() + ") pieces"
-                            + boxes);
-                }
+                addFlats(name, structure, data, flats);
             }
             return flats;
         } catch (RuntimeException | LinkageError e) {
@@ -175,6 +134,47 @@ public final class RealisticGenerator extends ChunkGenerator {
             plugin.getLogger().log(Level.WARNING, "Structures: World#getStructures fails while the noise is made, "
                     + "no ground is flattened", e);
             return List.of();
+        }
+    }
+
+    /**
+     * The rule of each flattened structure: the flats (box and level of the ground) it adds to {@code out}.
+     * <ul>
+     * <li>pillager outpost: each piece is flat with its bottom on the ground ({@code minY - 1}), except the big low
+     * plates, which follow the ground by themselves (terrain_matching);</li>
+     * <li>igloo: whole at the terrain of the middle of its chunk;</li>
+     * <li>abandoned camps (rigid): whole at the level of their first piece.</li>
+     * </ul>
+     */
+    private void addFlats(String name, GeneratedStructure structure, WorldData data, List<Flat> out) {
+        List<StructurePiece> pieces = List.copyOf(structure.getPieces());
+        if (name.equals("pillager_outpost")) {
+            for (StructurePiece piece : pieces) {
+                BoundingBox box = piece.getBoundingBox();
+                boolean plate = (box.getHeight() < box.getWidthX() || box.getHeight() < box.getWidthZ()) && box.getVolume() > 200;
+                if (!plate) {
+                    out.add(flat(box, (int) Math.floor(box.getMinY()) - 1));
+                }
+            }
+            return;
+        }
+        BoundingBox first = pieces.isEmpty() ? structure.getBoundingBox() : pieces.get(0).getBoundingBox();
+        boolean igloo = name.equals("igloo");
+        // The igloo is put on the middle of its chunk; a jigsaw structure (the camps) on the ground at the middle of its
+        // first piece, wherever that is: measured there, not at the middle of the chunk.
+        int startX = igloo ? Math.floorDiv((int) Math.floor(first.getCenterX()), 16) * 16 + 8
+                : ((int) Math.floor(first.getMinX()) + (int) Math.ceil(first.getMaxX()) - 1) / 2;
+        int startZ = igloo ? Math.floorDiv((int) Math.floor(first.getCenterZ()), 16) * 16 + 8
+                : ((int) Math.floor(first.getMinZ()) + (int) Math.ceil(first.getMaxZ()) - 1) / 2;
+        int terrain = Math.max(data.heightAt(startX, startZ), SEA_LEVEL);
+        // The game puts the first piece of a jigsaw structure with its bottom on the ground it measured: that Y is read
+        // from the piece itself rather than worked out again.
+        int level = igloo || pieces.isEmpty() ? terrain : (int) Math.floor(first.getMinY());
+        if (pieces.isEmpty()) {
+            out.add(flat(structure.getBoundingBox(), level));
+        }
+        for (StructurePiece piece : pieces) {
+            out.add(flat(piece.getBoundingBox(), level));
         }
     }
 
@@ -205,19 +205,32 @@ public final class RealisticGenerator extends ChunkGenerator {
                 int x = chunkX * 16 + localX;
                 int z = chunkZ * 16 + localZ;
                 int top = data.heightAt(x, z);
-                // The flat that weighs the most in this column (where pieces overlap, the lowest ground) is blended with the
-                // natural ground by its weight.
+                // The flats are merged first, then the natural ground is blended into the merged level:
+                // - on a flat (weight 1) the ground is at its level (the lowest one where pieces overlap);
+                // - elsewhere the flats around pull the ground to their levels, each with the weight w / (1 - w), which
+                //   grows without limit at the edge of its flat, so the merged level is continuous with each flat and
+                //   changes smoothly from one flat to the other;
+                // - the merged level is then blended with the natural ground by the weight of the strongest flat.
+                // It depends on the column alone, so every chunk agrees on the border.
+                int core = Integer.MAX_VALUE;
                 double weight = 0;
-                int flatLevel = 0;
+                double pulled = 0;
+                double pull = 0;
                 for (Flat flat : flats) {
                     double w = flat.weight(x, z, blend);
-                    if (w > weight || w == weight && w > 0 && flat.level() < flatLevel) {
-                        weight = w;
-                        flatLevel = flat.level();
+                    if (w >= 1) {
+                        core = Math.min(core, flat.level());
+                    } else if (w > 0) {
+                        double u = w / (1 - w);
+                        pulled += u * flat.level();
+                        pull += u;
+                        weight = Math.max(weight, w);
                     }
                 }
-                if (weight > 0) {
-                    top = (int) Math.round(flatLevel * weight + top * (1 - weight));
+                if (core != Integer.MAX_VALUE) {
+                    top = core;
+                } else if (pull > 0) {
+                    top = (int) Math.round(pulled / pull * weight + top * (1 - weight));
                 }
                 chunkData.setRegion(localX, minY, localZ, localX + 1, top + 1, localZ + 1, Material.STONE);
                 if (top < SEA_LEVEL) {
