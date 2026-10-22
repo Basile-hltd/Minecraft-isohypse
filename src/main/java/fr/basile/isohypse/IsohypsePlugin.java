@@ -196,9 +196,6 @@ public final class IsohypsePlugin extends JavaPlugin implements Listener {
         TerrainSettings d = TerrainSettings.DEFAULTS;
         var c = getConfig();
         return new TerrainSettings(c.getInt("realistic.scale.ocean_depth", d.oceanDepth()),
-                c.getDouble("realistic.scale.sea_share_min", d.seaShareMin()),
-                c.getDouble("realistic.scale.sea_share_target", d.seaShareTarget()),
-                c.getDouble("realistic.scale.sea_share_max", d.seaShareMax()),
                 c.getInt("realistic.temp.beach_depth", d.beachDepth()), c.getInt("realistic.temp.beach_height", d.beachHeight()),
                 c.getInt("realistic.temp.beach_inland_distance", d.beachInlandDistance()),
                 c.getInt("realistic.temp.ocean_blur", d.oceanBlur()), c.getInt("realistic.temp.land_blur", d.landBlur()),

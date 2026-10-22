@@ -13,8 +13,7 @@ import java.util.Map;
 import java.util.Random;
 
 /**
- * Which biome sits at a world position. Shared by {@link HeightBiomeProvider} (the real world) and the readable maps,
- * so both always agree.
+ * Which biome sits at a world position, drawn into the layers of {@code world.bin} (see {@link HeightScale}).
  *
  * <p><b>Surface</b>: {@link TempLayout} (the intermediate map) tells, for a column, the pool of biomes, and a noise
  * picks the biome in the pool:
@@ -42,8 +41,8 @@ import java.util.Random;
  */
 final class BiomeLayout {
 
-    /** A biome and the colour that stands for it in the preview. */
-    record Entry(Biome biome, int rgb) {}
+    /** A biome the layout can return. */
+    record Entry(Biome biome) {}
 
     /** From this many blocks under the sea level, the ocean is a deep ocean. */
     private static final int DEEP_OCEAN = 12;
@@ -83,18 +82,18 @@ final class BiomeLayout {
 
     // Oceans by temperature (cold to warm), shallow then deep.
     private static final List<Entry> OCEANS = List.of(
-            new Entry(Biome.FROZEN_OCEAN, 0x8fb8e0), new Entry(Biome.COLD_OCEAN, 0x2a6aa8),
-            new Entry(Biome.OCEAN, 0x1f4fa3), new Entry(Biome.LUKEWARM_OCEAN, 0x2f8fc4),
-            new Entry(Biome.WARM_OCEAN, 0x3fc0d0));
+            new Entry(Biome.FROZEN_OCEAN), new Entry(Biome.COLD_OCEAN),
+            new Entry(Biome.OCEAN), new Entry(Biome.LUKEWARM_OCEAN),
+            new Entry(Biome.WARM_OCEAN));
     private static final List<Entry> DEEP_OCEANS = List.of(
-            new Entry(Biome.DEEP_FROZEN_OCEAN, 0x6a92c0), new Entry(Biome.DEEP_COLD_OCEAN, 0x1d4a7a),
-            new Entry(Biome.DEEP_OCEAN, 0x14347a), new Entry(Biome.DEEP_LUKEWARM_OCEAN, 0x236b99),
-            new Entry(Biome.WARM_OCEAN, 0x3fc0d0)); // no deep warm ocean in vanilla
+            new Entry(Biome.DEEP_FROZEN_OCEAN), new Entry(Biome.DEEP_COLD_OCEAN),
+            new Entry(Biome.DEEP_OCEAN), new Entry(Biome.DEEP_LUKEWARM_OCEAN),
+            new Entry(Biome.WARM_OCEAN)); // no deep warm ocean in vanilla
     /** The ocean biomes of each type, shallow and deep (the pool a noise picks in). */
     private static final Map<OceanType, List<Entry>> SHALLOW_POOLS = pools(OCEANS);
     private static final Map<OceanType, List<Entry>> DEEP_POOLS = pools(DEEP_OCEANS);
-    private static final Entry BEACH = new Entry(Biome.BEACH, 0xf0e0a0);
-    private static final Entry STONY_SHORE = new Entry(Biome.STONY_SHORE, 0x8a8a7a);
+    private static final Entry BEACH = new Entry(Biome.BEACH);
+    private static final Entry STONY_SHORE = new Entry(Biome.STONY_SHORE);
 
     /** Entries with weights, drawn from by a number between 0 and 1. */
     private record WeightedPool(List<Entry> entries, double[] ends) {
@@ -143,43 +142,43 @@ final class BiomeLayout {
 
     /** The hot biomes. */
     private static final List<Entry> HOT = List.of(
-            new Entry(Biome.DESERT, 0xfa9418),
-            new Entry(Biome.BADLANDS, 0xd94515), new Entry(Biome.WOODED_BADLANDS, 0xb09765),
-            new Entry(Biome.WINDSWEPT_SAVANNA, 0xe5da87), new Entry(Biome.SAVANNA, 0xbdb25f),
-            new Entry(Biome.SAVANNA_PLATEAU, 0xa79d64), new Entry(Biome.JUNGLE, 0x537b09),
-            new Entry(Biome.SPARSE_JUNGLE, 0x628b17), new Entry(Biome.BAMBOO_JUNGLE, 0x768e14));
+            new Entry(Biome.DESERT),
+            new Entry(Biome.BADLANDS), new Entry(Biome.WOODED_BADLANDS),
+            new Entry(Biome.WINDSWEPT_SAVANNA), new Entry(Biome.SAVANNA),
+            new Entry(Biome.SAVANNA_PLATEAU), new Entry(Biome.JUNGLE),
+            new Entry(Biome.SPARSE_JUNGLE), new Entry(Biome.BAMBOO_JUNGLE));
     /** The swamps. */
     private static final List<Entry> SWAMPS = List.of(
-            new Entry(Biome.SWAMP, 0x07f9b2), new Entry(Biome.MANGROVE_SWAMP, 0x67352b));
+            new Entry(Biome.SWAMP), new Entry(Biome.MANGROVE_SWAMP));
     /** The biomes of the mountains, with the snowy ones. */
     private static final List<Entry> ALPINE = List.of(
-            new Entry(Biome.WINDSWEPT_HILLS, 0x606060), new Entry(Biome.WINDSWEPT_GRAVELLY_HILLS, 0x789878),
-            new Entry(Biome.WINDSWEPT_FOREST, 0x507050), new Entry(Biome.STONY_PEAKS, 0x8a8a8a),
-            new Entry(Biome.SNOWY_SLOPES, 0xdde6ee), new Entry(Biome.GROVE, 0xc3d6cc),
-            new Entry(Biome.JAGGED_PEAKS, 0xeef2f6), new Entry(Biome.FROZEN_PEAKS, 0xffffff),
-            new Entry(Biome.SNOWY_PLAINS, 0xf2f6ff), new Entry(Biome.SNOWY_TAIGA, 0x31554a),
-            new Entry(Biome.ICE_SPIKES, 0xb4dcdc));
+            new Entry(Biome.WINDSWEPT_HILLS), new Entry(Biome.WINDSWEPT_GRAVELLY_HILLS),
+            new Entry(Biome.WINDSWEPT_FOREST), new Entry(Biome.STONY_PEAKS),
+            new Entry(Biome.SNOWY_SLOPES), new Entry(Biome.GROVE),
+            new Entry(Biome.JAGGED_PEAKS), new Entry(Biome.FROZEN_PEAKS),
+            new Entry(Biome.SNOWY_PLAINS), new Entry(Biome.SNOWY_TAIGA),
+            new Entry(Biome.ICE_SPIKES));
     /** The other land biomes. */
     private static final List<Entry> OTHER = other();
     /** Every land biome: the cells draw from this list. */
     private static final List<Entry> LANDS = concat(OTHER, HOT, SWAMPS, ALPINE);
     /** The biomes of each type of land (a biome can be in several), with their weights: the pool the cells draw from. */
     private static final Map<LandType, WeightedPool> LAND_POOLS = landPools();
-    private static final Entry DEEP_DARK = new Entry(Biome.DEEP_DARK, 0x0a2830);
+    private static final Entry DEEP_DARK = new Entry(Biome.DEEP_DARK);
 
     /** dappled_forest is an ordinary forest; it only exists in recent versions. */
     private static List<Entry> other() {
         List<Entry> list = new ArrayList<>(List.of(
-                new Entry(Biome.PLAINS, 0x8db360), new Entry(Biome.SUNFLOWER_PLAINS, 0xb5db88),
-                new Entry(Biome.FOREST, 0x056621), new Entry(Biome.FLOWER_FOREST, 0x2d8e49),
-                new Entry(Biome.BIRCH_FOREST, 0x307444), new Entry(Biome.OLD_GROWTH_BIRCH_FOREST, 0x589c6c),
-                new Entry(Biome.DARK_FOREST, 0x40511a), new Entry(Biome.PALE_GARDEN, 0xb9c1b0),
-                new Entry(Biome.MEADOW, 0x83bb6d), new Entry(Biome.CHERRY_GROVE, 0xf4a6c8),
-                new Entry(Biome.TAIGA, 0x0b6659), new Entry(Biome.OLD_GROWTH_PINE_TAIGA, 0x596651),
-                new Entry(Biome.OLD_GROWTH_SPRUCE_TAIGA, 0x818e79)));
+                new Entry(Biome.PLAINS), new Entry(Biome.SUNFLOWER_PLAINS),
+                new Entry(Biome.FOREST), new Entry(Biome.FLOWER_FOREST),
+                new Entry(Biome.BIRCH_FOREST), new Entry(Biome.OLD_GROWTH_BIRCH_FOREST),
+                new Entry(Biome.DARK_FOREST), new Entry(Biome.PALE_GARDEN),
+                new Entry(Biome.MEADOW), new Entry(Biome.CHERRY_GROVE),
+                new Entry(Biome.TAIGA), new Entry(Biome.OLD_GROWTH_PINE_TAIGA),
+                new Entry(Biome.OLD_GROWTH_SPRUCE_TAIGA)));
         Biome dappled = biome("dappled_forest");
         if (dappled != null) {
-            list.add(new Entry(dappled, 0x4f9a3c));
+            list.add(new Entry(dappled));
         }
         return List.copyOf(list);
     }
@@ -195,12 +194,12 @@ final class BiomeLayout {
 
     /** sulfur_caves only exists in recent versions: null without it. */
     private static final Entry SULFUR_CAVES = sulfurCaves();
-    private static final Entry LUSH_CAVES = new Entry(Biome.LUSH_CAVES, 0x9ed82a);
-    private static final Entry DRIPSTONE_CAVES = new Entry(Biome.DRIPSTONE_CAVES, 0x8b5a2b);
+    private static final Entry LUSH_CAVES = new Entry(Biome.LUSH_CAVES);
+    private static final Entry DRIPSTONE_CAVES = new Entry(Biome.DRIPSTONE_CAVES);
 
     private static Entry sulfurCaves() {
         Biome sulfur = biome("sulfur_caves");
-        return sulfur == null ? null : new Entry(sulfur, 0xe8d820);
+        return sulfur == null ? null : new Entry(sulfur);
     }
 
     /** A biome by its name in the running server's registry, null if this version does not have it. */
@@ -216,9 +215,6 @@ final class BiomeLayout {
     private final long seed;
     private final TempLayout temp;
     private final PerlinNoiseGenerator[] temperature = new PerlinNoiseGenerator[3];
-    // humidity and deepDark are not used any more, but are still drawn: the other noises of a seed stay as they were.
-    private final PerlinNoiseGenerator[] humidity = new PerlinNoiseGenerator[3];
-    private final PerlinNoiseGenerator[] deepDark = new PerlinNoiseGenerator[3];
     private final PerlinNoiseGenerator[] warpX = new PerlinNoiseGenerator[3];
     private final PerlinNoiseGenerator[] warpZ = new PerlinNoiseGenerator[3];
 
@@ -231,10 +227,10 @@ final class BiomeLayout {
         Random random = new Random(seed ^ 0x2545F4914F6CDD1DL);
         for (int i = 0; i < temperature.length; i++) {
             temperature[i] = new PerlinNoiseGenerator(random.nextLong());
-            humidity[i] = new PerlinNoiseGenerator(random.nextLong());
+            random.nextLong(); // two noises that are not used any more are not drawn, but their draws stay: the other noises of a seed stay as they were
         }
-        for (int i = 0; i < deepDark.length; i++) {
-            deepDark[i] = new PerlinNoiseGenerator(random.nextLong());
+        for (int i = 0; i < 3; i++) {
+            random.nextLong();
         }
         for (int i = 0; i < warpX.length; i++) {
             warpX[i] = new PerlinNoiseGenerator(random.nextLong());
@@ -311,7 +307,7 @@ final class BiomeLayout {
 
     /** The surface biome of the column (x, z) whose top block is at Y {@code top}. */
     Entry at(int x, int z, int top) {
-        if (top < TempLayout.beachStart(seaLevel)) {
+        if (top < TerrainSettings.DEFAULTS.beachStart(seaLevel)) {
             double coast = climate(temperature, x, z); // a smooth noise, from -1 to 1
             List<Entry> pool = (top <= seaLevel - DEEP_OCEAN ? DEEP_POOLS : SHALLOW_POOLS).get(temp.oceanTypeAt(x, z));
             return pool.get(Math.min(pool.size() - 1, (int) ((coast + 1) / 2 * pool.size())));

@@ -17,30 +17,12 @@ import java.util.List;
  * {@code warmLandShare}, {@code normalLandShare} and the rest of the land columns of the height map (the limits are
  * searched), told apart on a narrower low-pass filtering of the land ({@code landBlur} blocks).</li>
  * </ul>
- * All of these are the {@link TerrainSettings} (the defaults for the callers that give none).
+ * All of these are the {@link TerrainSettings}.
  */
 final class TempLayout {
 
-    /** A zone, the colour that stands for it, and the Y range it covers (for the glossary). */
-    record Zone(String name, int rgb, String range) {}
-
-    /** The columns lower than this Y are the ocean (the beach starts here), for a sea level, with the default settings. */
-    static int beachStart(int seaLevel) {
-        return TerrainSettings.DEFAULTS.beachStart(seaLevel);
-    }
-
-    /** The land starts from this Y (the beach ends here), for a sea level, with the default settings. */
-    static int landStart(int seaLevel) {
-        return TerrainSettings.DEFAULTS.landStart(seaLevel);
-    }
-
-    /**
-     * The layout of a height map: the filtered distances and the limits between the zones are computed here, which
-     * takes a few seconds on a big map.
-     */
-    static TempLayout build(HeightMapData data, int seaLevel) {
-        return build(data, seaLevel, TerrainSettings.DEFAULTS);
-    }
+    /** A zone and the Y range it covers (written in settings.json). */
+    record Zone(String name, String range) {}
 
     /** The layout of a height map with these settings. */
     static TempLayout build(HeightMapData data, int seaLevel, TerrainSettings settings) {
@@ -98,13 +80,13 @@ final class TempLayout {
         this.normalTop = heightAtShare(land, landStart, settings.warmLandShare() + settings.normalLandShare());
         int near = Math.round(warmOceanLimit / 4f);
         int far = Math.round(oceanLimit / 4f);
-        this.deepSea = new Zone(OceanType.COLD.id(), 0x14347a, "à plus de " + far + " du bord");
-        this.ocean = new Zone(OceanType.NORMAL.id(), 0x1f4fa3, "à " + near + " à " + far + " du bord");
-        this.warmOcean = new Zone(OceanType.WARM.id(), 0x3fc0d0, "à moins de " + near + " du bord");
-        this.beach = new Zone("beach", 0xf0e0a0, beachStart + " à " + landStart);
-        this.warm = new Zone("warm", 0xe8a23c, landStart + " à " + warmTop);
-        this.normal = new Zone("normal", 0x6aa84f, warmTop + " à " + normalTop);
-        this.cold = new Zone("cold", 0xdde6ee, normalTop + " à " + highest);
+        this.deepSea = new Zone(OceanType.COLD.id(), "à plus de " + far + " du bord");
+        this.ocean = new Zone(OceanType.NORMAL.id(), "à " + near + " à " + far + " du bord");
+        this.warmOcean = new Zone(OceanType.WARM.id(), "à moins de " + near + " du bord");
+        this.beach = new Zone("beach", beachStart + " à " + landStart);
+        this.warm = new Zone("warm", landStart + " à " + warmTop);
+        this.normal = new Zone("normal", warmTop + " à " + normalTop);
+        this.cold = new Zone("cold", normalTop + " à " + highest);
     }
 
     /**

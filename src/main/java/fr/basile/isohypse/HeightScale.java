@@ -31,18 +31,16 @@ import java.util.stream.IntStream;
  * {@link HeightMapGenerator#fetchSource}) into the Y of the top block of every column of the world, one 16-bit value per
  * block, and writes {@code settings.json} next to {@code world.bin} with every parameter used and their values. The map is never in memory: the source is memory-mapped, the result is written band by band.
  *
- * <p>One factor {@code s} (blocks per metre) is used in x, z and height. Two unknowns, {@code s} and the altitude
- * {@code a} (metres) that lies at the sea level S (the columns lower than S are under water):
+ * <p>One factor {@code s} (blocks per metre) is used in x, z and height, and the terrain is only shifted: the altitude
+ * {@code a} (metres) is put at {@code bottomY} (the sea level minus {@code ocean_depth}) and the highest point reaches the
+ * ceiling, {@code s = (topY - bottomY) / (max - a)}. It never depends on a share of the map (a sea, a lake or any flat part
+ * would make a wrong one), only on the extremes of the altitudes:
  * <ul>
- * <li>the highest point reaches the ceiling: {@code S + (max - a) * s = topY}, which gives {@code s} from
- * {@code a};</li>
- * <li>the sea (what is lower than {@code a}) covers a share of the map between the minimum share of the settings and
- * the maximum share of the settings. As the map is not cut, this share is the share of the samples lower than {@code a}, whatever
- * {@code s}: {@code a} is a quantile of the altitudes, read in a histogram.</li>
+ * <li>the source holds a real sea (at least {@link #REAL_SEA_SHARE} of its samples at 0 m or lower): {@code a} is 0 m, so
+ * the flat sea is at {@code bottomY}, the deeper parts lower still, and the part of the land lower than
+ * {@code ocean_depth / s} metres is under water;</li>
+ * <li>no sea: {@code a} is the lowest altitude. The lowest part (a lake, for instance) is under water too.</li>
  * </ul>
- * The first try is the scale that fills the whole range (the lowest point at {@code bottomY}, the highest at
- * {@code topY}); it is kept if the sea share is acceptable, otherwise {@code a} is the quantile of the aimed share
- * (the aimed share of the settings).
  *
  * <p>The heights are {@code heightmap.bin} ({@link WorldFile} with only the layer {@code height}), with
  * {@code settings.json}. Once they are written, the source file is deleted: they are made again (the altitudes
@@ -60,7 +58,7 @@ final class HeightScale {
     static final String SETTINGS_FILE = "settings.json";
 
     /** Version of the format of the files and of this algorithm: part of the settings, so a change redoes the map. */
-    private static final int FORMAT = 5;
+    private static final int FORMAT = 6;
     /** Bytes before the altitudes of heightmap_source.bin: magic, latitude, longitude, size, step, side. */
     private static final int SOURCE_HEADER = 4 + 8 + 8 + 4 + 4 + 4;
 
@@ -77,8 +75,8 @@ final class HeightScale {
     private static final int SIDE_MULTIPLE = 32;
     /** No column is lower than this Y (a deeper sea floor is flattened). */
     static final int LOWEST_COLUMN = 0;
-    /** Width in metres of a bin of the histogram of the altitudes. */
-    private static final double BIN = 0.1;
+    /** The source holds a real sea when at least this share of its samples is at 0 m or lower. */
+    private static final double REAL_SEA_SHARE = 0.01;
     /** Rows computed at once (in parallel) before being written. */
     private static final int BAND = 256;
 
@@ -132,7 +130,6 @@ final class HeightScale {
         int n = HeightMapGenerator.samplesFor(size);
         int topY = maxHeight - 1;
         int bottomY = SEA_LEVEL - settings.oceanDepth();
-        int shore = SEA_LEVEL; // the pivot of the scale: the sea is what is lower than the sea level (the beach is the business of TempLayout)
         String inputs = inputs(lat, lon, size, maxHeight, settings);
         Files.deleteIfExists(settingsFile.toPath()); // an interrupted run must not leave settings that match nothing
 
@@ -150,10 +147,11 @@ final class HeightScale {
 
         double min = Double.MAX_VALUE;
         double max = -Double.MAX_VALUE;
+        long underZero = 0;
+        boolean realSea;
         double anchor;
         double scale;
-        double seaShare;
-        int[] extremes;
+        long[] results;
         int side;
         WorldFile.Directory directory;
         // A shared arena, closed before the source is deleted (a mapped file cannot be deleted on Windows).
@@ -165,32 +163,24 @@ final class HeightScale {
                 float v = at(altitude, i);
                 min = Math.min(min, v);
                 max = Math.max(max, v);
-            }
-            long[] histogram = new long[(int) ((max - min) / BIN) + 1];
-            for (long i = 0; i < count; i++) {
-                histogram[(int) ((at(altitude, i) - min) / BIN)]++;
-            }
-
-            if (max - min < 1) { // flat: nothing to fit
-                anchor = min + (shore - bottomY);
-            } else {
-                double fill = (topY - bottomY) / (max - min); // blocks per metre that fill the range
-                anchor = min + (shore - bottomY) / fill;
-                double share = share(histogram, min, count, anchor);
-                if (share < settings.seaShareMin() || share > settings.seaShareMax()) {
-                    anchor = quantile(histogram, min, count, settings.seaShareTarget());
+                if (v <= 0) {
+                    underZero++;
                 }
             }
-            scale = max - min < 1 ? 1 : (topY - shore) / (max - anchor); // blocks per metre
-            seaShare = share(histogram, min, count, anchor);
+            // The scale never depends on a share of the map: the sea, a lake or any other flat part would give a wrong one.
+            realSea = (double) underZero / count >= REAL_SEA_SHARE;
+            anchor = realSea ? 0 : min;
+            scale = max - anchor < 1 ? 1 : (topY - bottomY) / (max - anchor); // blocks per metre
             side = roundUp(Math.max(1, (int) Math.round((double) n * r * scale)), SIDE_MULTIPLE);
             directory = WorldFile.planHeights(side, side);
-            extremes = writeHeights(altitude, n, side, (double) n / side, shore, anchor, scale, topY, part, directory);
+            results = writeHeights(altitude, n, side, (double) n / side, bottomY, anchor, scale, topY, part, directory);
         }
-        logger.info(String.format(Locale.ROOT, "altitudes %.1f à %.1f m, échelle 1 m = %.3f bloc (x, z et hauteur), "
+        double seaShare = (double) results[2] / ((double) side * side);
+        logger.info(String.format(Locale.ROOT, "altitudes %.1f à %.1f m, %s, échelle 1 m = %.3f bloc (x, z et hauteur), "
                         + "carte %dx%d blocs (pas rognée), hauteurs %d à %d (prévu %d à %d), mer %.1f %% de la carte "
-                        + "(sous le niveau de la mer, y=%d, l'altitude %.1f m y est placée)",
-                min, max, scale, side, side, extremes[0], extremes[1], bottomY, topY, 100 * seaShare, shore, anchor));
+                        + "(sous le niveau de la mer, y=%d)",
+                min, max, realSea ? "mer réelle : 0 m à y=" + bottomY : "pas de mer : le point le plus bas à y=" + bottomY,
+                scale, side, side, results[0], results[1], bottomY, topY, 100 * seaShare, SEA_LEVEL));
 
         Files.move(part.toPath(), heightmap.toPath(), StandardCopyOption.REPLACE_EXISTING);
 
@@ -198,7 +188,7 @@ final class HeightScale {
                 + line("min_altitude_m", min, true) + line("max_altitude_m", max, true)
                 + line("anchor_altitude_m", anchor, true) + line("scale_blocks_per_m", scale, true)
                 + line("sea_share", seaShare, true) + line("width", side, true) + line("height", side, true)
-                + line("lowest_y", extremes[0], true) + line("highest_y", extremes[1], true)
+                + line("lowest_y", results[0], true) + line("highest_y", results[1], true)
                 + zonesJson(List.of()) + "  }\n}\n"; // the zones and the build block are filled in by buildWorld
         Files.writeString(settingsFile.toPath(), json, StandardCharsets.UTF_8); // last: a stopped run leaves no valid settings
         Files.delete(sourceFile.toPath());
@@ -386,9 +376,7 @@ final class HeightScale {
                 + line("max_height", maxHeight, true) + line("top_y", topY, true) + line("sea_level", SEA_LEVEL, true)
                 + line("ocean_depth", settings.oceanDepth(), true)
                 + line("bottom_y", bottomY, true) + line("lowest_column", LOWEST_COLUMN, false)
-                + "  },\n  \"sea_share\": {\n"
-                + line("min", settings.seaShareMin(), true) + line("target", settings.seaShareTarget(), true)
-                + line("max", settings.seaShareMax(), false) + "  }";
+                + "  }";
     }
 
     private static String line(String key, Number value, boolean comma) {
@@ -396,45 +384,17 @@ final class HeightScale {
         return "    \"" + key + "\": " + text + (comma ? "," : "") + "\n";
     }
 
-    /** The share of the samples lower than {@code altitude}, from the histogram. */
-    private static double share(long[] histogram, double min, long total, double altitude) {
-        double position = (altitude - min) / BIN;
-        int bin = (int) Math.floor(position);
-        if (bin < 0) {
-            return 0;
-        }
-        if (bin >= histogram.length) {
-            return 1;
-        }
-        long below = 0;
-        for (int i = 0; i < bin; i++) {
-            below += histogram[i];
-        }
-        return (below + histogram[bin] * (position - bin)) / total;
-    }
-
-    /** The altitude under which the given share of the samples lies, from the histogram. */
-    private static double quantile(long[] histogram, double min, long total, double share) {
-        double wanted = share * total;
-        long below = 0;
-        for (int i = 0; i < histogram.length; i++) {
-            if (below + histogram[i] >= wanted && histogram[i] > 0) {
-                return min + (i + (wanted - below) / histogram[i]) * BIN;
-            }
-            below += histogram[i];
-        }
-        return min + histogram.length * BIN;
-    }
-
     /**
      * Writes {@code out} with the header of the directory and the layer {@code height}: the Y of the top block of every
      * column, one big-endian short each, row by row. (The other layers are appended after.) Returns the lowest and the
      * highest Y.
      */
-    private static int[] writeHeights(MemorySegment altitude, int n, int side, double step, int shore, double anchor,
-                                      double scale, int topY, File out, WorldFile.Directory directory) throws IOException {
-        int lowest = Integer.MAX_VALUE;
-        int highest = Integer.MIN_VALUE;
+    private static long[] writeHeights(MemorySegment altitude, int n, int side, double step, int bottomY, double anchor,
+                                       double scale, int topY, File out, WorldFile.Directory directory)
+            throws IOException {
+        long lowest = Long.MAX_VALUE;
+        long highest = Long.MIN_VALUE;
+        long underSea = 0;
         try (DataOutputStream stream = new DataOutputStream(new BufferedOutputStream(new FileOutputStream(out), 1 << 16))) {
             WorldFile.writeHeader(stream, directory);
             for (int from = 0; from < side; from += BAND) {
@@ -445,7 +405,7 @@ final class HeightScale {
                     int j = first + row;
                     for (int i = 0; i < side; i++) {
                         double meters = sample(altitude, n, (i + 0.5) * step, (j + 0.5) * step, step);
-                        long y = Math.round(shore + (meters - anchor) * scale);
+                        long y = Math.round(bottomY + (meters - anchor) * scale);
                         band[row * side + i] = (short) Math.clamp(y, LOWEST_COLUMN, topY);
                     }
                 });
@@ -453,10 +413,13 @@ final class HeightScale {
                     stream.writeShort(y);
                     lowest = Math.min(lowest, y);
                     highest = Math.max(highest, y);
+                    if (y < SEA_LEVEL) {
+                        underSea++;
+                    }
                 }
             }
         }
-        return new int[]{lowest, highest};
+        return new long[]{lowest, highest, underSea};
     }
 
     /**

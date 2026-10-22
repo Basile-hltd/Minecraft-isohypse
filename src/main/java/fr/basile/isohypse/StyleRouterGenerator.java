@@ -20,20 +20,14 @@ import java.util.Random;
  */
 public final class StyleRouterGenerator extends ChunkGenerator {
 
-    private final WorldStyle style;
     private final ChunkGenerator delegate;
 
     public StyleRouterGenerator(WorldStyle style, IsohypsePlugin plugin) {
-        this.style = style;
         this.delegate = switch (style) {
             case VANILLA_PLUS -> new VanillaPlusGenerator();
             case REALISTIC -> new RealisticGenerator(plugin);
             case FAIRY -> new FairyGenerator();
         };
-    }
-
-    public WorldStyle style() {
-        return style;
     }
 
     @Override
