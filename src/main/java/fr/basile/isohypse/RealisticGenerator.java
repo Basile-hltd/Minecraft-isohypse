@@ -195,8 +195,9 @@ public final class RealisticGenerator extends ChunkGenerator {
      * plates, which follow the ground by themselves (terrain_matching);</li>
      * <li>igloo: whole at the terrain of the middle of its chunk;</li>
      * <li>abandoned camps (rigid): whole at the level of their first piece;</li>
-     * <li>villages: each piece that is not ignored ({@link #villageIgnored}) is flat under its bottom ({@code minY - 1}), with the
-     * margin, the blend and the corners of its type of village, and the highest ground wins where they overlap.</li>
+     * <li>villages: each house (under its bottom, {@code minY - 1}), fountain and meeting point (at {@code minY}) is flat, by
+     * size (see {@link #VILLAGE_FLAT_BELOW}), with the margin, the blend and the corners of its type of village, and the
+     * highest ground wins where they overlap.</li>
      * </ul>
      */
     private void addFlats(String name, GeneratedStructure structure, WorldData data, List<Flat> out) {
@@ -213,10 +214,19 @@ public final class RealisticGenerator extends ChunkGenerator {
         }
         if (name.startsWith("village")) {
             Shape village = villageShape(name);
+            Set<String> below = VILLAGE_FLAT_BELOW.getOrDefault(name, Set.of());
+            Set<String> at = VILLAGE_FLAT_AT.getOrDefault(name, Set.of());
+            Set<String> above = VILLAGE_FLAT_ABOVE.getOrDefault(name, Set.of());
             for (StructurePiece piece : pieces) {
                 BoundingBox box = piece.getBoundingBox();
-                if (!villageIgnored(box)) {
-                    out.add(flat(box, (int) Math.floor(box.getMinY()) - 1, village, true));
+                String size = villageSize(box);
+                int bottom = (int) Math.floor(box.getMinY());
+                if (below.contains(size)) {
+                    out.add(flat(box, bottom - 1, village, true));
+                } else if (at.contains(size)) {
+                    out.add(flat(box, bottom, village, true));
+                } else if (above.contains(size)) {
+                    out.add(flat(box, bottom + 1, village, true));
                 }
             }
             return;
@@ -357,25 +367,52 @@ public final class RealisticGenerator extends ChunkGenerator {
         }
     }
 
-    /** Villages: the sizes (longer side x shorter side x height, as {@link #logVillage} writes them) of pieces with no building. */
-    private static final Set<String> VILLAGE_IGNORED = Set.of("10x8x13", "12x10x13", "15x15x13", "15x15x5", "15x9x6",
-            "17x7x13", "19x16x13", "20x17x13", "2x2x3", "4x4x5");
-    /** Debug: log the sizes of the pieces of each village. */
+    /**
+     * Villages: per village, the sizes of the only pieces that are flattened, as {@link #villageSize} writes them, with
+     * the level of the flat in the three lists: under the bottom of the box ({@code minY - 1}) for the houses, at the bottom
+     * ({@code minY}) for the fountain and the meeting points, and above it ({@code minY + 1}) for what needs it. They were
+     * worked out from the template pools logged by VillagePoolLog (the sizes of the templates, minus 1 on each side, as the
+     * box of a piece does not count the last block). A size shared by a house and a meeting point is a house here.
+     */
+    private static final Map<String, Set<String>> VILLAGE_FLAT_BELOW = Map.of(
+            "village_desert", Set.of("4x4x4", "4x4x16", "4x5x4", "4x5x5", "4x5x17", "4x6x5", "4x8x6", "4x10x5", "5x6x5", "5x6x9",
+                    "5x11x11", "6x6x6", "6x7x4", "6x9x5", "6x9x6", "6x10x8", "7x7x4", "7x10x5", "8x8x8", "9x10x6",
+                    "9x11x5", "10x12x6"),
+            "village_plains", Set.of("2x4x1", "6x6x6", "6x7x6", "6x8x5", "6x9x7", "6x9x11", "6x10x6", "6x10x10", "6x12x5", "6x14x11",
+                    "6x16x5", "7x8x6", "7x8x7", "7x8x9", "7x9x6", "8x8x10", "8x10x6", "8x10x7", "8x11x5", "8x12x5",
+                    "8x15x6", "9x10x8", "10x11x7", "10x12x7", "10x16x9"),
+            "village_savanna", Set.of("5x6x6", "5x8x6", "6x6x6", "6x6x9", "6x8x6", "6x9x7", "6x10x6", "7x8x5", "7x8x7", "7x8x10",
+                    "7x9x6", "7x9x7", "7x14x6", "8x8x5", "8x10x6", "8x12x6", "8x12x7", "8x12x9", "9x10x7", "10x10x7",
+                    "10x12x13"),
+            "village_snowy", Set.of("4x5x3", "4x5x4", "4x6x4", "4x8x4", "5x6x4", "5x6x5", "5x6x6", "6x6x5", "6x6x7", "6x6x8", "6x7x4",
+                    "6x7x5", "6x7x7", "6x8x5", "6x8x7", "6x9x13", "6x10x6", "6x12x9", "6x13x8", "7x8x8", "8x8x9",
+                    "8x9x4", "8x9x6", "8x9x7"),
+            "village_taiga", Set.of("5x6x4", "6x6x6", "6x6x7", "6x6x8", "6x7x5", "6x7x6", "6x7x9", "6x7x10", "6x8x6", "6x8x7", "6x9x6",
+                    "7x8x6", "7x10x5", "7x10x9", "7x12x6", "8x8x5", "8x8x6", "8x10x6", "9x9x6", "9x10x5", "9x10x6",
+                    "9x11x7", "10x12x13"));
+    private static final Map<String, Set<String>> VILLAGE_FLAT_AT = Map.of(
+            "village_desert", Set.of("7x9x5", "8x16x5", "11x11x5", "14x14x5"),
+            "village_plains", Set.of("4x5x7", "7x10x5", "7x14x4", "8x8x3", "8x8x5", "9x9x6", "9x10x5", "9x15x6", "10x10x8"),
+            "village_savanna", Set.of("7x8x4", "8x8x4", "8x10x5", "10x10x5", "11x12x6", "11x13x4", "11x13x5"),
+            "village_snowy", Set.of("6x6x6", "7x8x5", "7x11x7", "8x10x4", "8x10x5"),
+            "village_taiga", Set.of("7x12x4", "17x21x2", "17x21x5"));
+    private static final Map<String, Set<String>> VILLAGE_FLAT_ABOVE = Map.of("village_plains", Set.of("7x8x8"));
+
+    /** The size of a piece: the shorter side, the longer side and the height, so that the rotation does not matter. */
+    private static String villageSize(BoundingBox box) {
+        int w = (int) Math.round(box.getWidthX());
+        int d = (int) Math.round(box.getWidthZ());
+        return Math.min(w, d) + "x" + Math.max(w, d) + "x" + Math.round(box.getHeight());
+    }
+
+    /** Debug: log the volumes of the pieces of each village. */
     private static final boolean DEBUG_VILLAGE_LOG = true;
     /** Debug: the villages already logged, so that each is told once and not for every chunk. */
     private final Set<String> loggedVillages = ConcurrentHashMap.newKeySet();
 
-    /** Whether the piece has nothing to be flat under: one side of 1 block or less, or a size known to hold no building. */
-    private static boolean villageIgnored(BoundingBox box) {
-        int w = (int) Math.round(box.getWidthX());
-        int d = (int) Math.round(box.getWidthZ());
-        int h = (int) Math.round(box.getHeight());
-        return w <= 1 || d <= 1 || h <= 1 || VILLAGE_IGNORED.contains(Math.max(w, d) + "x" + Math.min(w, d) + "x" + h);
-    }
-
     /**
-     * Debug: the pieces of a village grouped by size (the longer side, the shorter side, the height: the same whatever the
-     * rotation), with how many there are and where one of them is, to tell the models apart in the game.
+     * Debug: the pieces of a village grouped by volume (the same whatever the rotation), with how many there are and where
+     * one of them is, to tell the models apart in the game.
      */
     private void logVillage(String name, GeneratedStructure structure) {
         BoundingBox whole = structure.getBoundingBox();
@@ -384,22 +421,17 @@ public final class RealisticGenerator extends ChunkGenerator {
                 + (int) whole.getMaxX() + "," + (int) whole.getMaxZ())) {
             return;
         }
-        WorldData data = data();
-        Map<String, List<BoundingBox>> bySize = new TreeMap<>();
+        Map<Integer, List<BoundingBox>> byVolume = new TreeMap<>();
         for (StructurePiece piece : structure.getPieces()) {
             BoundingBox b = piece.getBoundingBox();
-            int w = (int) Math.round(b.getWidthX());
-            int d = (int) Math.round(b.getWidthZ());
-            int h = (int) Math.round(b.getHeight());
-            bySize.computeIfAbsent(Math.max(w, d) + "x" + Math.min(w, d) + "x" + h, k -> new ArrayList<>()).add(b);
+            byVolume.computeIfAbsent((int) Math.round(b.getVolume()),k -> new ArrayList<>()).add(b);
         }
         plugin.getLogger().info("Village " + name + " " + structure.getBoundingBox() + ": " + structure.getPieces().size()
-                + " pieces, " + bySize.size() + " sizes (long x court x haut)");
-        for (Map.Entry<String, List<BoundingBox>> entry : bySize.entrySet()) {
+                + " pieces, " + byVolume.size() + " volumes");
+        for (Map.Entry<Integer, List<BoundingBox>> entry : byVolume.entrySet()) {
             BoundingBox b = entry.getValue().get(0);
-            int ground = data.heightAt((int) Math.floor(b.getCenterX()), (int) Math.floor(b.getCenterZ()));
-            plugin.getLogger().info("  " + entry.getKey() + " x" + entry.getValue().size() + "  e.g. x " + (int) b.getMinX()
-                    + " y " + (int) b.getMinY() + " z " + (int) b.getMinZ() + " (ground y=" + ground + ")");
+            plugin.getLogger().info("  volume " + entry.getKey() + " x" + entry.getValue().size() + "  e.g. x " + (int) b.getMinX()
+                    + " y " + (int) b.getMinY() + " z " + (int) b.getMinZ());
         }
     }
 

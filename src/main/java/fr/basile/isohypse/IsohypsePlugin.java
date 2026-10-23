@@ -57,6 +57,7 @@ public final class IsohypsePlugin extends JavaPlugin implements Listener {
         registerCommand();
         getLogger().info("Isohypse " + getPluginMeta().getVersion() + " enabled");
         logRealisticCenter();
+        VillagePoolLog.log(this);
         prepareRealisticTerrain();
         // The world.bin needs the seed, known when the overworld is created (WorldInitEvent); the speed is for test servers
         // only: tools/local_run.py starts the JVM with -Disohypse.maxFlySpeed=true.
@@ -102,15 +103,18 @@ public final class IsohypsePlugin extends JavaPlugin implements Listener {
     public void onStructureSpawn(AsyncStructureSpawnEvent event) {
         Structure structure = event.getStructure();
         boolean monument = structure == Structure.MONUMENT;
+
         if (!(monument || PORTALS.contains(structure))
                 || worldStyle.orElse(null) != WorldStyle.REALISTIC
                 || event.getWorld().getEnvironment() != World.Environment.NORMAL) {
             return;
         }
+
         WorldData data = worldData();
         if (data == null) {
             return;
         }
+
         BoundingBox box = event.getBoundingBox();
         if (!monument) {
             // The game finds the Y of a ruined portal in a column of the vanilla terrain, not of ours (README): it can come
@@ -120,21 +124,24 @@ public final class IsohypsePlugin extends JavaPlugin implements Listener {
             int centreZ = (int) Math.floor(box.getCenterZ());
             if (ruinedPortals.ready() && box.getMaxY() <= data.heightAt(centreX, centreZ)) {
                 event.setCancelled(true);
-                ruinedPortals.request(centreX, centreZ);
+                //ruinedPortals.request(centreX, centreZ);
             }
             return;
         }
+
         int floor = Integer.MIN_VALUE;
         for (int x = (int) Math.floor(box.getMinX()); x < box.getMaxX(); x++) {
             for (int z = (int) Math.floor(box.getMinZ()); z < box.getMaxZ(); z++) {
                 floor = Math.max(floor, data.heightAt(x, z));
             }
         }
+
         if (floor > MONUMENT_MAX_FLOOR) {
             event.setCancelled(true);
-            getLogger().info("Monument océanique en chunk (" + event.getChunkX() + ", " + event.getChunkZ()
-                    + ") non généré : le fond monte jusqu'à y=" + floor + " (maximum " + MONUMENT_MAX_FLOOR + ")");
+            //getLogger().info("Monument océanique en chunk (" + event.getChunkX() + ", " + event.getChunkZ()
+            //        + ") non généré : le fond monte jusqu'à y=" + floor + " (maximum " + MONUMENT_MAX_FLOOR + ")");
         }
+
     }
 
     /**
