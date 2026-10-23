@@ -32,3 +32,32 @@ structures:
   margin: 1            # blocs : le plat dépasse d'autant la boîte de chaque pièce de la structure (0 à 16)
   blend_distance: 12   # blocs : sur cette distance autour du plat, le sol passe doucement du plat au relief naturel (0 = bord net, 48 au plus)
   corner_radius: 8     # blocs : rayon des coins arrondis du plat de chaque pièce (0 = coins droits, 32 au plus)
+
+  # Villages : le sol est aplati sous chaque pièce qui a un bâtiment ; là où des pièces se chevauchent, le sol le plus haut gagne.
+  # Mêmes réglages que ci-dessus, propres aux villages (une clé absente prend la valeur de village, puis la valeur par défaut).
+  village:
+    margin: 1
+    blend_distance: 12
+    corner_radius: 0
+    # Valeurs propres à chaque type de village (village_plains, village_desert...).
+    types:
+      plains:
+        margin: 0
+        blend_distance: 12
+        corner_radius: 0
+      desert:
+        margin: 1
+        blend_distance: 12
+        corner_radius: 0
+      savanna:
+        margin: 1
+        blend_distance: 12
+        corner_radius: 0
+      snowy:
+        margin: 1
+        blend_distance: 12
+        corner_radius: 0
+      taiga:
+        margin: 1
+        blend_distance: 12
+        corner_radius: 0
