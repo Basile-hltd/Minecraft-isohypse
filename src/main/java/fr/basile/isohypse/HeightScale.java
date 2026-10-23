@@ -1,0 +1,460 @@
+package fr.basile.isohypse;
+
+import java.io.BufferedOutputStream;
+import java.io.DataInputStream;
+import java.io.DataOutputStream;
+import java.io.File;
+import java.io.FileInputStream;
+import java.io.FileOutputStream;
+import java.io.IOException;
+import java.io.RandomAccessFile;
+import java.lang.foreign.Arena;
+import java.lang.foreign.MemorySegment;
+import java.lang.foreign.ValueLayout;
+import java.nio.ByteOrder;
+import java.nio.channels.FileChannel;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.StandardCopyOption;
+import java.nio.file.StandardOpenOption;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Locale;
+import java.util.logging.Logger;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+import java.util.stream.IntStream;
+
+/**
+ * The scaling step: turns {@code heightmap_source.bin} (the real altitudes in metres, see
+ * {@link HeightMapGenerator#fetchSource}) into the Y of the top block of every column of the world, one 16-bit value per
+ * block, and writes {@code settings.json} next to {@code world.bin} with every parameter used and their values. The map is never in memory: the source is memory-mapped, the result is written band by band.
+ *
+ * <p>One factor {@code s} (blocks per metre) is used in x, z and height, and the terrain is only shifted: the altitude
+ * {@code a} (metres) is put at {@code bottomY} (the sea level minus {@code ocean_depth}) and the highest point reaches the
+ * ceiling, {@code s = (topY - bottomY) / (max - a)}. It never depends on a share of the map (a sea, a lake or any flat part
+ * would make a wrong one), only on the extremes of the altitudes:
+ * <ul>
+ * <li>the source holds a real sea (at least {@link #REAL_SEA_SHARE} of its samples at 0 m or lower): {@code a} is 0 m, so
+ * the flat sea is at {@code bottomY}, the deeper parts lower still, and the part of the land lower than
+ * {@code ocean_depth / s} metres is under water;</li>
+ * <li>no sea: {@code a} is the lowest altitude. The lowest part (a lake, for instance) is under water too.</li>
+ * </ul>
+ *
+ * <p>The heights are {@code heightmap.bin} ({@link WorldFile} with only the layer {@code height}), with
+ * {@code settings.json}. Once they are written, the source file is deleted: they are made again (the altitudes
+ * downloaded again) when the settings that make them change ({@link #upToDate} tells by comparing {@code settings.json}
+ * with the parameters asked).
+ *
+ * <p>{@code world.bin} is made from {@code heightmap.bin} at every start ({@link #buildWorld}): the layer {@code height}
+ * (a copy) and the layer {@code temp}, the zones of {@link TempLayout} computed on those heights. It is what the plugin
+ * uses and what the viewer reads.
+ */
+final class HeightScale {
+
+    static final String HEIGHTMAP_FILE = "heightmap.bin";
+    static final String WORLD_FILE = "world.bin";
+    static final String SETTINGS_FILE = "settings.json";
+
+    /** Version of the format of the files and of this algorithm: part of the settings, so a change redoes the map. */
+    private static final int FORMAT = 6;
+    /** Bytes before the altitudes of heightmap_source.bin: magic, latitude, longitude, size, step, side. */
+    private static final int SOURCE_HEADER = 4 + 8 + 8 + 4 + 4 + 4;
+
+    static final int SEA_LEVEL = 63;
+    /** The Y at which the layers of the cave biomes are read: the caves, and the deep caves (under the deep dark limit). */
+    static final int CAVE_Y = 0;
+    static final int DEEP_CAVE_Y = -40;
+    /**
+     * The cave layers are read as if the column were deep enough (this Y for its top block): they hold the draw alone,
+     * and {@link WorldData#biomeAt} applies the rules of the depth (as {@link BiomeLayout#at(int, int, int, int)} does).
+     */
+    private static final int UNDERGROUND_TOP = 10_000;
+    /** The side of the map is a multiple of this, so that its middle is a multiple of 16: chunks and biome cells line up. */
+    private static final int SIDE_MULTIPLE = 32;
+    /** No column is lower than this Y (a deeper sea floor is flattened). */
+    static final int LOWEST_COLUMN = 0;
+    /** The source holds a real sea when at least this share of its samples is at 0 m or lower. */
+    private static final double REAL_SEA_SHARE = 0.01;
+    /** Rows computed at once (in parallel) before being written. */
+    private static final int BAND = 256;
+
+    private static final ValueLayout.OfFloat FLOAT = ValueLayout.JAVA_FLOAT_UNALIGNED.withOrder(ByteOrder.BIG_ENDIAN);
+
+    private HeightScale() {
+    }
+
+    /** The parameters that make {@code heightmap.bin}, for an area and a maximum height, as written in the settings. */
+    private static String inputs(double lat, double lon, int size, int maxHeight, TerrainSettings settings) {
+        int topY = maxHeight - 1;
+        return inputs(lat, lon, size, HeightMapGenerator.stepFor(size), HeightMapGenerator.samplesFor(size), maxHeight, topY,
+                SEA_LEVEL - settings.oceanDepth(), settings);
+    }
+
+    /** Whether {@code heightmap.bin} was made with exactly these parameters (and so needs nothing to be done). */
+    static boolean upToDate(File dir, double lat, double lon, int size, int maxHeight, TerrainSettings settings)
+            throws IOException {
+        File settingsFile = new File(dir, SETTINGS_FILE);
+        return new File(dir, HEIGHTMAP_FILE).exists() && settingsFile.exists()
+                && Files.readString(settingsFile.toPath(), StandardCharsets.UTF_8).contains(inputs(lat, lon, size, maxHeight, settings));
+    }
+
+    /** Milliseconds since a {@link System#nanoTime()}. */
+    private static long millis(long startedNanos) {
+        return (System.nanoTime() - startedNanos) / 1_000_000;
+    }
+
+    private static int roundUp(int value, int multiple) {
+        return (value + multiple - 1) / multiple * multiple;
+    }
+
+    private static float at(MemorySegment altitude, long index) {
+        return altitude.get(FLOAT, 4 * index);
+    }
+
+    /**
+     * Scales {@code heightmap_source.bin} into {@code heightmap.bin} and {@code settings.json}, then deletes the source.
+     *
+     * @param dir the plugin folder, which holds the source and receives the two files
+     * @param maxHeight the maximum height of the world (the highest column is {@code maxHeight - 1})
+     */
+    static void scale(File dir, double lat, double lon, int size, int maxHeight, TerrainSettings settings, Logger logger)
+            throws IOException {
+        long started = System.nanoTime();
+        File sourceFile = new File(dir, HeightMapGenerator.SOURCE_FILE);
+        File heightmap = new File(dir, HEIGHTMAP_FILE);
+        File part = new File(dir, HEIGHTMAP_FILE + ".part");
+        File settingsFile = new File(dir, SETTINGS_FILE);
+        int r = HeightMapGenerator.stepFor(size);
+        int n = HeightMapGenerator.samplesFor(size);
+        int topY = maxHeight - 1;
+        int bottomY = SEA_LEVEL - settings.oceanDepth();
+        String inputs = inputs(lat, lon, size, maxHeight, settings);
+        Files.deleteIfExists(settingsFile.toPath()); // an interrupted run must not leave settings that match nothing
+
+        try (DataInputStream in = new DataInputStream(new FileInputStream(sourceFile))) {
+            if (in.readInt() != HeightMapGenerator.SOURCE_MAGIC) {
+                throw new IOException("Fichier d'altitudes réelles invalide : " + sourceFile);
+            }
+            in.readDouble();
+            in.readDouble();
+            in.readInt();
+            if (in.readInt() != r || in.readInt() != n) {
+                throw new IOException("Le fichier d'altitudes réelles n'a pas le pas ni la taille de la zone demandée : " + sourceFile);
+            }
+        }
+
+        double min = Double.MAX_VALUE;
+        double max = -Double.MAX_VALUE;
+        long underZero = 0;
+        boolean realSea;
+        double anchor;
+        double scale;
+        long[] results;
+        int side;
+        WorldFile.Directory directory;
+        // A shared arena, closed before the source is deleted (a mapped file cannot be deleted on Windows).
+        try (Arena arena = Arena.ofShared(); RandomAccessFile raf = new RandomAccessFile(sourceFile, "r");
+             FileChannel channel = raf.getChannel()) {
+            MemorySegment altitude = channel.map(FileChannel.MapMode.READ_ONLY, SOURCE_HEADER, 4L * n * n, arena);
+            long count = (long) n * n;
+            for (long i = 0; i < count; i++) {
+                float v = at(altitude, i);
+                min = Math.min(min, v);
+                max = Math.max(max, v);
+                if (v <= 0) {
+                    underZero++;
+                }
+            }
+            // The scale never depends on a share of the map: the sea, a lake or any other flat part would give a wrong one.
+            realSea = (double) underZero / count >= REAL_SEA_SHARE;
+            anchor = realSea ? 0 : min;
+            scale = max - anchor < 1 ? 1 : (topY - bottomY) / (max - anchor); // blocks per metre
+            side = roundUp(Math.max(1, (int) Math.round((double) n * r * scale)), SIDE_MULTIPLE);
+            directory = WorldFile.planHeights(side, side);
+            results = writeHeights(altitude, n, side, (double) n / side, bottomY, anchor, scale, topY, part, directory);
+        }
+        double seaShare = (double) results[2] / ((double) side * side);
+        logger.info(String.format(Locale.ROOT, "altitudes %.1f à %.1f m, %s, échelle 1 m = %.3f bloc (x, z et hauteur), "
+                        + "carte %dx%d blocs (pas rognée), hauteurs %d à %d (prévu %d à %d), mer %.1f %% de la carte "
+                        + "(sous le niveau de la mer, y=%d)",
+                min, max, realSea ? "mer réelle : 0 m à y=" + bottomY : "pas de mer : le point le plus bas à y=" + bottomY,
+                scale, side, side, results[0], results[1], bottomY, topY, 100 * seaShare, SEA_LEVEL));
+
+        Files.move(part.toPath(), heightmap.toPath(), StandardCopyOption.REPLACE_EXISTING);
+
+        String json = "{\n" + inputs + ",\n" + settings.tempJson() + ",\n" + buildJson(null, List.of()) + ",\n  \"results\": {\n"
+                + line("min_altitude_m", min, true) + line("max_altitude_m", max, true)
+                + line("anchor_altitude_m", anchor, true) + line("scale_blocks_per_m", scale, true)
+                + line("sea_share", seaShare, true) + line("width", side, true) + line("height", side, true)
+                + line("lowest_y", results[0], true) + line("highest_y", results[1], true)
+                + zonesJson(List.of()) + "  }\n}\n"; // the zones and the build block are filled in by buildWorld
+        Files.writeString(settingsFile.toPath(), json, StandardCharsets.UTF_8); // last: a stopped run leaves no valid settings
+        Files.delete(sourceFile.toPath());
+        logger.info(heightmap.getAbsolutePath() + " et " + settingsFile.getName() + " écrits, " + HeightMapGenerator.SOURCE_FILE
+                + " supprimé (mise à l'échelle : " + millis(started) + " ms)");
+    }
+
+    /**
+     * Makes {@code world.bin} from {@code heightmap.bin}: a copy of the heights, then the zones of the intermediate map
+     * computed with these settings, then the biomes (surface and caves), which come from the seed; and puts the
+     * parameters of the zones and their names, the seed and the list of the biomes in {@code settings.json}. Done at
+     * every start, once the seed of the world is known; nothing is downloaded.
+     */
+    static void buildWorld(File dir, TerrainSettings settings, long seed, Logger logger) throws IOException {
+        long started = System.nanoTime();
+        File heightmap = new File(dir, HEIGHTMAP_FILE);
+        File world = new File(dir, WORLD_FILE);
+        File part = new File(dir, WORLD_FILE + ".part");
+        File settingsFile = new File(dir, SETTINGS_FILE);
+        WorldFile.Directory old = WorldFile.read(heightmap);
+        WorldFile.Layer heights = old.layer(WorldFile.HEIGHT);
+        WorldFile.Directory directory = WorldFile.planWorld(old.width(), old.height());
+        try (DataOutputStream stream = new DataOutputStream(new BufferedOutputStream(new FileOutputStream(part), 1 << 16))) {
+            WorldFile.writeHeader(stream, directory);
+        }
+        try (FileChannel from = FileChannel.open(heightmap.toPath(), StandardOpenOption.READ);
+             FileChannel to = FileChannel.open(part.toPath(), StandardOpenOption.WRITE, StandardOpenOption.APPEND)) {
+            long done = 0;
+            while (done < heights.bytes()) {
+                done += from.transferTo(heights.offset() + done, heights.bytes() - done, to);
+            }
+        }
+        Built built = appendLayers(part, directory, settings, seed, logger);
+
+        String text = Files.readString(settingsFile.toPath(), StandardCharsets.UTF_8);
+        text = replaceBlock(text, "  \"temp\": \\{[^}]*\\}", settings.tempJson());
+        text = replaceBlock(text, "  \"build\": \\{[^}]*\\}", buildJson(seed, built.palette()));
+        text = replaceBlock(text, "    \"temp_zones\": \\[[^\\]]*\\]\n", zonesJson(built.zones()));
+        Files.move(part.toPath(), world.toPath(), StandardCopyOption.REPLACE_EXISTING);
+        Files.writeString(settingsFile.toPath(), text, StandardCharsets.UTF_8);
+        logger.info(world.getAbsolutePath() + " : refait à partir de " + HEIGHTMAP_FILE + " (seed " + seed + "), "
+                + millis(started) + " ms en tout");
+    }
+
+    /** The {@code build} block of {@code settings.json}: what the layers that depend on the seed were made with. */
+    private static String buildJson(Long seed, List<String> palette) {
+        StringBuilder json = new StringBuilder("  \"build\": {\n");
+        json.append("    \"seed\": ").append(seed == null ? "null" : seed.toString()).append(",\n");
+        json.append(line("biome_step", WorldFile.BIOME_STEP, true));
+        json.append(line("cave_y", CAVE_Y, true));
+        json.append(line("deep_cave_y", DEEP_CAVE_Y, true));
+        json.append("    \"biomes\": [");
+        for (int i = 0; i < palette.size(); i++) {
+            json.append(i == 0 ? "" : ", ").append('"').append(palette.get(i)).append('"');
+        }
+        return json.append("]\n  }").toString();
+    }
+
+    private static String replaceBlock(String text, String regex, String replacement) {
+        Matcher block = Pattern.compile(regex).matcher(text);
+        if (!block.find()) {
+            throw new IllegalStateException("settings.json: block not found: " + regex);
+        }
+        return block.replaceFirst(Matcher.quoteReplacement(replacement));
+    }
+
+    /** The {@code temp_zones} entry of the results: the zones in the order of their index in the layer {@code temp}. */
+    private static String zonesJson(List<TempLayout.Zone> zones) {
+        StringBuilder json = new StringBuilder("    \"temp_zones\": [\n");
+        for (int i = 0; i < zones.size(); i++) {
+            json.append("      {\"name\": \"").append(zones.get(i).name()).append("\", \"range\": \"")
+                    .append(zones.get(i).range()).append("\"}").append(i + 1 < zones.size() ? "," : "").append('\n');
+        }
+        return json.append("    ]\n").toString();
+    }
+
+    /** What the layers appended to the world are made of: the zones and the list of the biomes, in the order of the indexes. */
+    private record Built(List<TempLayout.Zone> zones, List<String> palette) {}
+
+    /** The value of a layer at the block (x, z) whose top block is at Y {@code top}. */
+    private interface Value {
+        int at(int x, int z, int top);
+    }
+
+    /**
+     * Appends the layers {@code temp}, {@code biome}, {@code cave_biome} and {@code deep_cave_biome} to {@code file},
+     * which holds the header and the layer {@code height} (nothing else yet). Each is a byte per cell: the zone of
+     * {@link TempLayout}, or the index of the biome of {@link BiomeLayout} (0 for none) in the palette.
+     */
+    private static Built appendLayers(File file, WorldFile.Directory directory, TerrainSettings settings, long seed,
+                                      Logger logger) throws IOException {
+        WorldFile.Layer first = directory.layer(WorldFile.TEMP);
+        if (Files.size(file.toPath()) != first.offset()) {
+            throw new IOException("world.bin: the layer temp does not follow the heights: " + file);
+        }
+        long started = System.nanoTime();
+        HeightMapData data = HeightMapData.fromWorld(file);
+        long read = millis(started);
+        started = System.nanoTime();
+        TempLayout temp = TempLayout.build(data, SEA_LEVEL, settings);
+        long built = millis(started);
+        List<TempLayout.Zone> zones = temp.all();
+        BiomeLayout biomes = new BiomeLayout(SEA_LEVEL, seed, temp);
+        List<String> palette = palette();
+        Map<String, Integer> indexes = new HashMap<>();
+        for (int i = 0; i < palette.size(); i++) {
+            indexes.put(palette.get(i), i);
+        }
+        try (DataOutputStream stream = new DataOutputStream(
+                new BufferedOutputStream(new FileOutputStream(file, true), 1 << 16))) {
+            started = System.nanoTime();
+            writeLayer(stream, first, data, (x, z, top) -> zones.indexOf(temp.at(x, z, top)));
+            long zonesMs = millis(started);
+            started = System.nanoTime();
+            writeLayer(stream, directory.layer(WorldFile.BIOME), data, (x, z, top) -> index(indexes, biomes.at(x, z, top)));
+            long surfaceMs = millis(started);
+            started = System.nanoTime();
+            writeLayer(stream, directory.layer(WorldFile.CAVE_BIOME), data,
+                    (x, z, top) -> index(indexes, biomes.caveAt(x, CAVE_Y, z, UNDERGROUND_TOP)));
+            long cavesMs = millis(started);
+            started = System.nanoTime();
+            writeLayer(stream, directory.layer(WorldFile.DEEP_CAVE_BIOME), data,
+                    (x, z, top) -> index(indexes, biomes.caveAt(x, DEEP_CAVE_Y, z, UNDERGROUND_TOP)));
+            long deepMs = millis(started);
+            logger.info("zones de la carte intermédiaire et biomes calculés (" + zones.size() + " zones, " + (palette.size() - 1)
+                    + " biomes possibles) : lecture des hauteurs " + read + " ms, filtres de TempLayout " + built
+                    + " ms, couche des zones " + zonesMs + " ms, biomes de surface " + surfaceMs + " ms, grottes " + cavesMs
+                    + " ms, grottes profondes " + deepMs + " ms");
+        }
+        return new Built(zones, palette);
+    }
+
+    /** Writes a layer of one byte per cell, band by band. */
+    private static void writeLayer(DataOutputStream stream, WorldFile.Layer layer, HeightMapData data, Value value)
+            throws IOException {
+        int width = data.width();
+        int height = data.height();
+        int step = layer.step();
+        int columns = layer.columns();
+        for (int from = 0; from < layer.rows(); from += BAND) {
+            int rows = Math.min(BAND, layer.rows() - from);
+            int first = from;
+            byte[] band = new byte[rows * columns];
+            IntStream.range(0, rows).parallel().forEach(row -> {
+                int z = (first + row) * step - height / 2;
+                for (int column = 0; column < columns; column++) {
+                    int x = column * step - width / 2;
+                    band[row * columns + column] = (byte) value.at(x, z, data.heightAt(x, z));
+                }
+            });
+            stream.write(band);
+        }
+    }
+
+    /** The biomes the layers can hold, sorted: "none" (index 0, a cave without a biome of its own), then the names. */
+    private static List<String> palette() {
+        java.util.TreeSet<String> names = new java.util.TreeSet<>();
+        for (BiomeLayout.Entry entry : BiomeLayout.allEntries()) {
+            names.add(entry.biome().key().value());
+        }
+        for (BiomeLayout.Entry entry : BiomeLayout.caveEntries()) {
+            names.add(entry.biome().key().value());
+        }
+        List<String> palette = new java.util.ArrayList<>();
+        palette.add("none");
+        palette.addAll(names);
+        return List.copyOf(palette);
+    }
+
+    private static int index(Map<String, Integer> indexes, BiomeLayout.Entry entry) {
+        if (entry == null || entry.biome() == null) {
+            return 0;
+        }
+        return indexes.getOrDefault(entry.biome().key().value(), 0);
+    }
+
+    /** The parameters that make {@code heightmap.bin}, as the json written (and compared) in {@code settings.json}. */
+    private static String inputs(double lat, double lon, int size, int step, int samples, int maxHeight, int topY,
+                                 int bottomY, TerrainSettings settings) {
+        return "  \"format\": " + FORMAT + ",\n"
+                + "  \"source\": {\n"
+                + line("latitude", lat, true) + line("longitude", lon, true) + line("size_m", size, true)
+                + line("step_m", step, true) + line("samples_per_side", samples, false)
+                + "  },\n  \"world\": {\n"
+                + line("max_height", maxHeight, true) + line("top_y", topY, true) + line("sea_level", SEA_LEVEL, true)
+                + line("ocean_depth", settings.oceanDepth(), true)
+                + line("bottom_y", bottomY, true) + line("lowest_column", LOWEST_COLUMN, false)
+                + "  }";
+    }
+
+    private static String line(String key, Number value, boolean comma) {
+        String text = value instanceof Double d ? String.format(Locale.ROOT, "%s", d) : value.toString();
+        return "    \"" + key + "\": " + text + (comma ? "," : "") + "\n";
+    }
+
+    /**
+     * Writes {@code out} with the header of the directory and the layer {@code height}: the Y of the top block of every
+     * column, one big-endian short each, row by row. (The other layers are appended after.) Returns the lowest and the
+     * highest Y.
+     */
+    private static long[] writeHeights(MemorySegment altitude, int n, int side, double step, int bottomY, double anchor,
+                                       double scale, int topY, File out, WorldFile.Directory directory)
+            throws IOException {
+        long lowest = Long.MAX_VALUE;
+        long highest = Long.MIN_VALUE;
+        long underSea = 0;
+        try (DataOutputStream stream = new DataOutputStream(new BufferedOutputStream(new FileOutputStream(out), 1 << 16))) {
+            WorldFile.writeHeader(stream, directory);
+            for (int from = 0; from < side; from += BAND) {
+                int rows = Math.min(BAND, side - from);
+                int first = from;
+                short[] band = new short[rows * side];
+                IntStream.range(0, rows).parallel().forEach(row -> {
+                    int j = first + row;
+                    for (int i = 0; i < side; i++) {
+                        double meters = sample(altitude, n, (i + 0.5) * step, (j + 0.5) * step, step);
+                        long y = Math.round(bottomY + (meters - anchor) * scale);
+                        band[row * side + i] = (short) Math.clamp(y, LOWEST_COLUMN, topY);
+                    }
+                });
+                for (short y : band) {
+                    stream.writeShort(y);
+                    lowest = Math.min(lowest, y);
+                    highest = Math.max(highest, y);
+                    if (y < SEA_LEVEL) {
+                        underSea++;
+                    }
+                }
+            }
+        }
+        return new long[]{lowest, highest, underSea};
+    }
+
+    /**
+     * Altitude at the source position (x, z), in samples (the centre of the block), for a block that covers
+     * {@code stepSamples} samples: the average over the area when it is bigger than a sample, bilinear interpolation
+     * otherwise.
+     */
+    private static double sample(MemorySegment altitude, int n, double x, double z, double stepSamples) {
+        if (stepSamples > 1) {
+            double x0 = Math.max(x - stepSamples / 2, 0);
+            double x1 = Math.min(x + stepSamples / 2, n);
+            double z0 = Math.max(z - stepSamples / 2, 0);
+            double z1 = Math.min(z + stepSamples / 2, n);
+            double sum = 0;
+            double weight = 0;
+            for (int pz = (int) z0; pz < Math.ceil(z1); pz++) {
+                double wz = Math.min(pz + 1, z1) - Math.max(pz, z0);
+                for (int px = (int) x0; px < Math.ceil(x1); px++) {
+                    double w = wz * (Math.min(px + 1, x1) - Math.max(px, x0));
+                    sum += w * at(altitude, (long) pz * n + px);
+                    weight += w;
+                }
+            }
+            return sum / weight;
+        }
+        double gx = Math.clamp(x - 0.5, 0, n - 1);
+        double gz = Math.clamp(z - 0.5, 0, n - 1);
+        int x0 = (int) Math.floor(gx);
+        int z0 = (int) Math.floor(gz);
+        int x1 = Math.min(x0 + 1, n - 1);
+        int z1 = Math.min(z0 + 1, n - 1);
+        double fx = gx - x0;
+        double fz = gz - z0;
+        double top = at(altitude, (long) z0 * n + x0) * (1 - fx) + at(altitude, (long) z0 * n + x1) * fx;
+        double bottom = at(altitude, (long) z1 * n + x0) * (1 - fx) + at(altitude, (long) z1 * n + x1) * fx;
+        return top * (1 - fz) + bottom * fz;
+    }
+}

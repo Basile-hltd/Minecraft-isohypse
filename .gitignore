@@ -6,3 +6,6 @@ out/
 tmp/
 .venv/
 __pycache__/
+*.png
+*.bin
+pre_gen_heightmaps/

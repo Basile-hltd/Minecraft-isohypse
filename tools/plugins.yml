@@ -1,0 +1,5 @@
+# Plugins tiers installés par local_run.py dans le serveur de test.
+# Un slug Modrinth par ligne ; la version est choisie selon --mc-version.
+# Si aucune version ne correspond, local_run affiche un warning et passe au suivant.
+plugins:
+  - lod-server-support

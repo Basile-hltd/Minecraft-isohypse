@@ -1,0 +1,5 @@
+# Gamerules appliqués par local_run.py à chaque démarrage du serveur de test
+# (envoyés en commandes `gamerule` une fois le serveur prêt).
+gamerules:
+  advance_time: false      # le temps reste figé
+  advance_weather: false   # pas de changement de météo

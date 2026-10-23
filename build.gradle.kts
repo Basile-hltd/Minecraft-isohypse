@@ -27,7 +27,7 @@ java {
 tasks.processResources {
     val props = mapOf("version" to pluginVersion, "mcVersion" to mcVersion)
     inputs.properties(props)
-    filesMatching("plugin.yml") { expand(props) }
+    filesMatching("paper-plugin.yml") { expand(props) }
 }
 
 tasks.jar {

@@ -1,0 +1,63 @@
+# Style Realistic : point du monde réel placé au centre du monde (x=0, z=0, le spawn).
+realistic:
+  latitude: 0.249550   # degrés, de -90 (sud) à 90 (nord)
+  longitude: 6.620393   # degrés, de -180 (ouest) à 180 (est)
+  size: 60000          # côté en mètres de la zone réelle récupérée ; la carte finale est mise à l'échelle (voir README)
+
+  # Mise à l'échelle des altitudes réelles en hauteurs de blocs (heightmap.bin) : un seul facteur, le point le plus haut au plafond. Les changer refait la height map et retélécharge les tuiles.
+  scale:
+    ocean_depth: 30          # blocs sous le niveau de la mer où est mise la mer plate (0 m réel) ; sans mer dans la zone, le point le plus bas
+
+  # Carte intermédiaire (zones) : zones tirées de la seule altitude. Prises en compte à chaque démarrage (world.bin est refait, rien n'est retéléchargé :
+  # relancer le serveur, puis Recharger dans le viewer).
+  temp:
+    beach_depth: 5             # blocs sous le niveau de la mer où la plage commence (la mer s'arrête)
+    beach_height: 8            # blocs au-dessus du niveau de la mer où la plage finit (la terre commence)
+    beach_inland_distance: 50  # une plage à plus de tant de blocs de la mer est de la terre chaude
+    ocean_blur: 50            # blocs, à peu près l'écart type du flou de la distance au bord, dans la mer...
+    land_blur: 50              # ...et sur la terre (plus étroit)
+    warm_ocean_share: 0.35   # part des colonnes de mer en ocean_warm (le long du bord)...
+    normal_ocean_share: 0.5 # ...en ocean_normal ; le reste est ocean_cold (le large)
+    warm_land_share: 0.35      # part des colonnes de terre en warm (les plus basses)...
+    normal_land_share: 0.45    # ...en normal ; le reste est cold (les plus hautes)
+
+# Monde : hauteur maximale de l'overworld (le sol reste à y=-64). Arrondie à la valeur la plus proche acceptée par le jeu :
+# un multiple de 16 de 128 à 2032 ; 320 est la valeur de Minecraft (rien n'est changé). Ne s'applique qu'à un monde qui
+# n'existe pas encore : le plugin écrit un datapack au lancement du serveur.
+world:
+  max_height: 320
+
+# Structures du monde Realistic dont le sol est aplati (igloos, avant-postes de pillards, camps abandonnés).
+structures:
+  margin: 1            # blocs : le plat dépasse d'autant la boîte de chaque pièce de la structure (0 à 16)
+  blend_distance: 12   # blocs : sur cette distance autour du plat, le sol passe doucement du plat au relief naturel (0 = bord net, 48 au plus)
+  corner_radius: 8     # blocs : rayon des coins arrondis du plat de chaque pièce (0 = coins droits, 32 au plus)
+
+  # Villages : le sol est aplati sous chaque pièce qui a un bâtiment ; là où des pièces se chevauchent, le sol le plus haut gagne.
+  # Mêmes réglages que ci-dessus, propres aux villages (une clé absente prend la valeur de village, puis la valeur par défaut).
+  village:
+    margin: 1
+    blend_distance: 12
+    corner_radius: 0
+    # Valeurs propres à chaque type de village (village_plains, village_desert...).
+    types:
+      plains:
+        margin: 0
+        blend_distance: 12
+        corner_radius: 0
+      desert:
+        margin: 1
+        blend_distance: 12
+        corner_radius: 0
+      savanna:
+        margin: 1
+        blend_distance: 12
+        corner_radius: 0
+      snowy:
+        margin: 1
+        blend_distance: 12
+        corner_radius: 0
+      taiga:
+        margin: 1
+        blend_distance: 12
+        corner_radius: 0
