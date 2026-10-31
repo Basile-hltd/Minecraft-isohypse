@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="Ressources/Logo.png" alt="Logo d'isohypse" width="160">
+</p>
+
 # Minecraft-isohypse
 
 Plugin [Paper](https://papermc.io) qui modifie la génération du terrain d'un monde Minecraft. Le dépôt contient le plugin, ainsi que des outils pour le tester en local (serveur de test et client).
