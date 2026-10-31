@@ -288,7 +288,7 @@ final class HeightScale {
         HeightMapData data = HeightMapData.fromWorld(file);
         long read = millis(started);
         started = System.nanoTime();
-        TempLayout temp = TempLayout.build(data, SEA_LEVEL, settings);
+        TempLayout temp = TempLayout.build(data, SEA_LEVEL, settings, logger);
         long built = millis(started);
         List<TempLayout.Zone> zones = temp.all();
         BiomeLayout biomes = new BiomeLayout(SEA_LEVEL, seed, temp);
@@ -300,18 +300,21 @@ final class HeightScale {
         try (DataOutputStream stream = new DataOutputStream(
                 new BufferedOutputStream(new FileOutputStream(file, true), 1 << 16))) {
             started = System.nanoTime();
-            writeLayer(stream, first, data, (x, z, top) -> zones.indexOf(temp.at(x, z, top)));
+            writeLayer(stream, first, data, (x, z, top) -> zones.indexOf(temp.at(x, z, top)), logger, "couche des zones");
             long zonesMs = millis(started);
             started = System.nanoTime();
-            writeLayer(stream, directory.layer(WorldFile.BIOME), data, (x, z, top) -> index(indexes, biomes.at(x, z, top)));
+            writeLayer(stream, directory.layer(WorldFile.BIOME), data, (x, z, top) -> index(indexes, biomes.at(x, z, top)),
+                    logger, "biomes de surface");
             long surfaceMs = millis(started);
             started = System.nanoTime();
             writeLayer(stream, directory.layer(WorldFile.CAVE_BIOME), data,
-                    (x, z, top) -> index(indexes, biomes.caveAt(x, CAVE_Y, z, UNDERGROUND_TOP)));
+                    (x, z, top) -> index(indexes, biomes.caveAt(x, CAVE_Y, z, UNDERGROUND_TOP)),
+                    logger, "grottes");
             long cavesMs = millis(started);
             started = System.nanoTime();
             writeLayer(stream, directory.layer(WorldFile.DEEP_CAVE_BIOME), data,
-                    (x, z, top) -> index(indexes, biomes.caveAt(x, DEEP_CAVE_Y, z, UNDERGROUND_TOP)));
+                    (x, z, top) -> index(indexes, biomes.caveAt(x, DEEP_CAVE_Y, z, UNDERGROUND_TOP)),
+                    logger, "grottes profondes");
             long deepMs = millis(started);
             logger.info("zones de la carte intermédiaire et biomes calculés (" + zones.size() + " zones, " + (palette.size() - 1)
                     + " biomes possibles) : lecture des hauteurs " + read + " ms, filtres de TempLayout " + built
@@ -322,8 +325,9 @@ final class HeightScale {
     }
 
     /** Writes a layer of one byte per cell, band by band. */
-    private static void writeLayer(DataOutputStream stream, WorldFile.Layer layer, HeightMapData data, Value value)
-            throws IOException {
+    private static void writeLayer(DataOutputStream stream, WorldFile.Layer layer, HeightMapData data, Value value,
+                                   Logger logger, String label) throws IOException {
+        Progress progress = new Progress(logger, label, layer.rows());
         int width = data.width();
         int height = data.height();
         int step = layer.step();
@@ -340,6 +344,7 @@ final class HeightScale {
                 }
             });
             stream.write(band);
+            progress.advance(rows);
         }
     }
 

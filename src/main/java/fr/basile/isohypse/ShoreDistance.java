@@ -1,6 +1,7 @@
 package fr.basile.isohypse;
 
 import java.util.function.IntPredicate;
+import java.util.logging.Logger;
 import java.util.stream.IntStream;
 
 /**
@@ -28,9 +29,10 @@ final class ShoreDistance {
     /**
      * @param isSource whether a column of this height is a source, which the distance is measured from
      */
-    ShoreDistance(HeightMapData data, IntPredicate isSource, int minDistance) {
+    ShoreDistance(HeightMapData data, IntPredicate isSource, int minDistance, Logger logger, String label) {
         this.width = data.width();
         this.height = data.height();
+        Progress progress = new Progress(logger, label, (long) width + height);
         float[] horizontal = new float[width * height]; // squared distance to the nearest source of the same row
         ThreadLocal<Buffers> buffers = ThreadLocal.withInitial(() -> new Buffers(3 * Math.max(width, height)));
 
@@ -43,6 +45,7 @@ final class ShoreDistance {
             for (int column = 0; column < width; column++) {
                 horizontal[row * width + column] = (float) Math.min(b.d[width + column], INFINITY);
             }
+            progress.advance(1);
         });
 
         this.quarters = new short[width * height];
@@ -57,6 +60,7 @@ final class ShoreDistance {
                 quarters[row * width + column] = (short) Math.min(Short.MAX_VALUE,
                         Math.round(Math.sqrt(b.d[height + row]) * 4));
             }
+            progress.advance(1);
         });
     }
 

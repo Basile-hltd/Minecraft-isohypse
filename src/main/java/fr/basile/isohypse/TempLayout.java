@@ -1,6 +1,7 @@
 package fr.basile.isohypse;
 
 import java.util.List;
+import java.util.logging.Logger;
 
 /**
  * The intermediate map: seven zones derived from the height map alone, with no link to the Minecraft biomes (yet).
@@ -25,19 +26,20 @@ final class TempLayout {
     record Zone(String name, String range) {}
 
     /** The layout of a height map with these settings. */
-    static TempLayout build(HeightMapData data, int seaLevel, TerrainSettings settings) {
+    static TempLayout build(HeightMapData data, int seaLevel, TerrainSettings settings, Logger logger) {
         int beachStart = settings.beachStart(seaLevel);
         int landStart = settings.landStart(seaLevel);
         // The sea zones: the distance of every sea column to the edge of the sea (what is not sea), filtered widely.
-        ShoreDistance shore = new ShoreDistance(data, v -> v >= beachStart, 0);
+        ShoreDistance shore = new ShoreDistance(data, v -> v >= beachStart, 0, logger, "distance au bord de la mer");
         HeightSmoothing seaSmoothing = new HeightSmoothing(data, shore::quarterBlocks,
-                (column, row) -> data.valueAt(column, row) < beachStart, settings.oceanBlur());
-        ShoreDistance seaDistance = new ShoreDistance(data, v -> v < beachStart, settings.beachInlandDistance());
+                (column, row) -> data.valueAt(column, row) < beachStart, settings.oceanBlur(), logger, "flou de la mer");
+        ShoreDistance seaDistance = new ShoreDistance(data, v -> v < beachStart, settings.beachInlandDistance(), logger,
+                "distance à la mer des plages");
         // The land, and the beach columns too far from the sea (they are warm land, decided before the filtering).
         HeightSmoothing landSmoothing = new HeightSmoothing(data, data::valueAt, (column, row) -> {
             int v = data.valueAt(column, row);
             return v >= landStart || v >= beachStart && seaDistance.isFar(column - data.width() / 2, row - data.height() / 2);
-        }, settings.landBlur());
+        }, settings.landBlur(), logger, "flou de la terre");
         return new TempLayout(seaLevel, data.highest(), seaSmoothing, landSmoothing, seaDistance, settings);
     }
 

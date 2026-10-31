@@ -82,9 +82,10 @@ public final class IsohypsePlugin extends JavaPlugin implements Listener {
     WorldData worldData() {
         if (worldData == null) {
             // The game works out the rings of the strongholds in the background as soon as the level exists, before the
-            // event that makes world.bin: it asks for biomes then, and waits here for the file.
+            // event that makes world.bin: it asks for biomes then, and waits here for the file. No timeout: making it can take
+            // minutes on a large map, and onWorldInit always releases the latch (and stops the server if it failed).
             try {
-                worldReady.await(120, java.util.concurrent.TimeUnit.SECONDS);
+                worldReady.await();
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
             }

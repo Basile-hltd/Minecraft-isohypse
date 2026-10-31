@@ -1,5 +1,6 @@
 package fr.basile.isohypse;
 
+import java.util.logging.Logger;
 import java.util.stream.IntStream;
 
 /**
@@ -35,9 +36,11 @@ final class HeightSmoothing {
      * @param mask which columns are filtered (the others are left out of the filter and keep their value)
      * @param sigma about the standard deviation, in blocks, of the filter
      */
-    HeightSmoothing(HeightMapData data, Values values, Mask mask, int sigma) {
+    HeightSmoothing(HeightMapData data, Values values, Mask mask, int sigma, Logger logger, String label) {
         this.width = data.width();
         this.height = data.height();
+        // Two blurs (the sum, the count), each along the rows then along the columns.
+        Progress progress = new Progress(logger, label, 2L * (width + height));
         int half = Math.max(1, Math.min(sigma, (Math.min(width, height) - 1) / 2)); // each box is 2 * half + 1 wide
         int size = width * height;
         this.inRange = new boolean[size];
@@ -56,8 +59,8 @@ final class HeightSmoothing {
                 }
             }
         }
-        blur(sum, half);
-        blur(count, half);
+        blur(sum, half, progress);
+        blur(count, half, progress);
         for (int i = 0; i < size; i++) {
             if (inRange[i] && count[i] > 1e-4f) {
                 smoothed[i] = (short) Math.round(sum[i] / count[i]);
@@ -90,16 +93,17 @@ final class HeightSmoothing {
     }
 
     /** Three box blurs along the rows, then along the columns, in place. */
-    private void blur(float[] values, int half) {
-        blurLines(values, height, width, width, 1, half);
-        blurLines(values, width, height, 1, width, half);
+    private void blur(float[] values, int half, Progress progress) {
+        blurLines(values, height, width, width, 1, half, progress);
+        blurLines(values, width, height, 1, width, half, progress);
     }
 
     /**
      * Blurs every line of {@code values}: the line {@code l} starts at {@code l * lineStride}, and its {@code length}
      * elements are {@code elementStride} apart.
      */
-    private static void blurLines(float[] values, int lines, int length, int lineStride, int elementStride, int half) {
+    private static void blurLines(float[] values, int lines, int length, int lineStride, int elementStride, int half,
+                                  Progress progress) {
         ThreadLocal<double[]> buffer = ThreadLocal.withInitial(() -> new double[2 * (length + 2 * half) + 2]);
         IntStream.range(0, lines).parallel().forEach(line -> {
             double[] work = buffer.get();
@@ -118,6 +122,7 @@ final class HeightSmoothing {
                     values[start + i * elementStride] = (float) ((work[base + i + 2 * half + 1] - work[base + i]) / width);
                 }
             }
+            progress.advance(1);
         });
     }
 }
