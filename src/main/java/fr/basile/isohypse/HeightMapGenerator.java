@@ -27,8 +27,9 @@ import java.util.regex.Pattern;
 /**
  * Fetches the real altitudes of the area around a GPS point (see {@link #fetchSource}); {@link HeightScale} scales them.
  *
- * <p>Sources: swisstopo swissALTI3D (Switzerland, 0.5 m), AWS Terrain Tiles / Terrarium (whole world, ~30 m)
- * where swisstopo has no data. North is up (negative z).
+ * <p>Sources: swisstopo swissALTI3D (Switzerland, 0.5 m, or 2 m when the area is sampled less often than every metre),
+ * used wherever it covers the area whatever its size, AWS Terrain Tiles / Terrarium (whole world, ~30 m) where swisstopo
+ * has no data. North is up (negative z).
  */
 public final class HeightMapGenerator {
 
@@ -38,8 +39,6 @@ public final class HeightMapGenerator {
     static final int SOURCE_MAGIC = 0x49534F48;
     /** Most samples per side of the real area: a bigger area is sampled every few metres instead of every metre. */
     private static final int MAX_SAMPLES = 4096;
-    /** swissALTI3D (0.5 m, then 2 m tiles) is only used up to this sampling step (m); beyond, Terrarium is lighter. */
-    private static final int MAX_SWISS_STEP = 4;
     /** The altitudes (m) outside this range are artefacts of the sources (a corrupt pixel of a tile...): brought back to its bounds. */
     private static final double MIN_ALTITUDE = -500;
     private static final double MAX_ALTITUDE = 9000;
@@ -139,7 +138,8 @@ public final class HeightMapGenerator {
             logger.info("Zone de " + size + " m : un point d'altitude tous les " + r + " m (" + n + "x" + n + " points)");
         }
         double cosLat = Math.cos(Math.toRadians(lat));
-        Swiss swiss = r <= MAX_SWISS_STEP ? new Swiss(lat, lon, areaM / 2.0, r <= 1 ? 0.5 : 2.0) : null;
+        // swissALTI3D wherever it covers the area, however big (0.5 m tiles for 1 sample per metre, 2 m beyond).
+        Swiss swiss = new Swiss(lat, lon, areaM / 2.0, r <= 1 ? 0.5 : 2.0);
         Terrarium terrarium = new Terrarium(lat, r);
         float[] altitude = new float[n * n];
         double min = Double.MAX_VALUE;
@@ -149,11 +149,9 @@ public final class HeightMapGenerator {
             for (int i = 0; i < n; i++) {
                 double east = (i - n / 2.0 + 0.5) * r;
                 double north = -(j - n / 2.0 + 0.5) * r;
-                double elevation = swiss == null ? Double.NaN : swiss.elevation(east, north);
+                double elevation = swiss.elevation(east, north);
                 if (Double.isNaN(elevation)) {
-                    if (swiss != null) {
-                        fallback++;
-                    }
+                    fallback++;
                     elevation = terrarium.elevation(lat + north / M_PER_DEG_LAT,
                             lon + east / (M_PER_DEG_LAT * cosLat));
                 }
@@ -266,10 +264,22 @@ public final class HeightMapGenerator {
         final double res;
         final int pixelsPerTile;
         final Map<String, String> urls = new HashMap<>();      // "kx-ky" -> GeoTIFF URL
-        final Map<String, Raster> tiles = new HashMap<>();
+        /**
+         * The tiles decoded, least recently used first. The map is sampled row by row, so only the tiles across the
+         * area (twice, a sample reads the pixels of two tiles at a border) are needed at once: the others are dropped,
+         * and decoded again from the cache of downloaded files if they are ever needed.
+         */
+        final Map<String, Raster> tiles;
 
         Swiss(double lat, double lon, double half, double res) throws Exception {
             this.res = res;
+            int capacity = 2 * ((int) Math.ceil(2 * half / 1000) + 2);
+            this.tiles = new java.util.LinkedHashMap<>(16, 0.75f, true) {
+                @Override
+                protected boolean removeEldestEntry(Map.Entry<String, Raster> eldest) {
+                    return size() > capacity;
+                }
+            };
             this.pixelsPerTile = (int) (1000 / res);
             double[] c = toLv95(lat, lon);
             centerE = c[0];

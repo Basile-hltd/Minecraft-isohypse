@@ -24,8 +24,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.Random;
 import java.util.Set;
-import java.util.TreeMap;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.logging.Level;
 
 /**
@@ -42,6 +40,16 @@ public final class RealisticGenerator extends ChunkGenerator {
 
     /** Vanilla sea level: the low parts of the terrain are filled with water up to this Y. */
     private static final int SEA_LEVEL = HeightScale.SEA_LEVEL;
+    /** Blocks under the height of a lake (its water level) where its bed is, away from the shore, before the noise. */
+    private static final int LAKE_DEPTH = 6;
+    /** Blocks of depth gained per block from the shore: the bed goes down in a slope, not in a wall. */
+    private static final double LAKE_SLOPE = 0.5;
+    /** The distance from the shore, in blocks, from which the bed is at its deepest. */
+    private static final int LAKE_RADIUS = (int) Math.ceil(LAKE_DEPTH / LAKE_SLOPE);
+    /** How far the noise moves the bed, up or down, in blocks, where the lake is at its deepest (none at the shore). */
+    private static final double LAKE_NOISE = 1.0;
+    /** The size, in blocks, of the cells of the first octave of the noise of the bed (the second is a third of it). */
+    private static final int LAKE_NOISE_CELL = 12;
     /** Under a sea, the caves only start this many blocks under the lowest point of the sea floor of the map. */
     private static final int CARVER_SEA_MARGIN = 8;
     /** Under a village, the caves only start this many blocks under its ground (over the whole box of the village). */
@@ -175,9 +183,6 @@ public final class RealisticGenerator extends ChunkGenerator {
                 GeneratedStructure structure = entry.getValue();
                 String name = names.get(entry.getKey());
                 addFlats(name, structure, data, flats);
-                if (DEBUG_VILLAGE_LOG && name.startsWith("village")) {
-                    logVillage(name, structure);
-                }
             }
             return flats;
         } catch (RuntimeException | LinkageError e) {
@@ -280,11 +285,19 @@ public final class RealisticGenerator extends ChunkGenerator {
         WorldData data = data();
         int minY = chunkData.getMinHeight();
         List<Flat> flats = flats(worldInfo, data, chunkX, chunkZ);
+        int[] lakeDepths = lakeDepths(data, worldInfo.getSeed(), chunkX * 16, chunkZ * 16, 16, 16);
         for (int localX = 0; localX < 16; localX++) {
             for (int localZ = 0; localZ < 16; localZ++) {
                 int x = chunkX * 16 + localX;
                 int z = chunkZ * 16 + localZ;
                 int top = data.heightAt(x, z);
+                if (lakeDepths != null && lakeDepths[localX * 16 + localZ] >= 0) {
+                    // A lake: the height of the map is the water level, the bed is under it.
+                    int bed = top - lakeDepths[localX * 16 + localZ];
+                    chunkData.setRegion(localX, minY, localZ, localX + 1, bed + 1, localZ + 1, Material.STONE);
+                    chunkData.setRegion(localX, bed + 1, localZ, localX + 1, top + 1, localZ + 1, Material.WATER);
+                    continue;
+                }
                 top = groundAt(flats, x, z, top);
                 chunkData.setRegion(localX, minY, localZ, localX + 1, top + 1, localZ + 1, Material.STONE);
                 if (top < SEA_LEVEL) {
@@ -292,6 +305,84 @@ public final class RealisticGenerator extends ChunkGenerator {
                 }
             }
         }
+    }
+
+    /**
+     * The depth of the water of the lake columns of the area of {@code width} x {@code height} columns from (x0, z0), by
+     * {@code (x - x0) * height + (z - z0)}: -1 for a column that is not a lake, else the blocks under the water level
+     * where its bed is. The depth grows by {@link #LAKE_SLOPE} per block from the shore (the nearest column that is not a
+     * lake, within {@link #LAKE_RADIUS} blocks) up to {@link #LAKE_DEPTH}, so the bed goes down in a slope; a noise then
+     * moves the bed, by {@link #LAKE_NOISE} at most where it is deepest and not at all at the shore, so that it is not
+     * flat. Null when there is no lake in the area.
+     */
+    private static int[] lakeDepths(WorldData data, long seed, int x0, int z0, int width, int height) {
+        int around = 2 * LAKE_RADIUS;
+        int stride = height + around;
+        boolean[] lake = new boolean[(width + around) * stride]; // the area and LAKE_RADIUS columns around it
+        boolean any = false;
+        for (int i = 0; i < width + around; i++) {
+            for (int j = 0; j < stride; j++) {
+                boolean is = data.lakeAt(x0 - LAKE_RADIUS + i, z0 - LAKE_RADIUS + j);
+                lake[i * stride + j] = is;
+                any |= is && i >= LAKE_RADIUS && i < LAKE_RADIUS + width && j >= LAKE_RADIUS && j < LAKE_RADIUS + height;
+            }
+        }
+        if (!any) {
+            return null;
+        }
+        int[] depths = new int[width * height];
+        for (int i = 0; i < width; i++) {
+            for (int j = 0; j < height; j++) {
+                if (!lake[(i + LAKE_RADIUS) * stride + j + LAKE_RADIUS]) {
+                    depths[i * height + j] = -1;
+                    continue;
+                }
+                int nearest = Integer.MAX_VALUE; // squared distance to the nearest column that is not a lake
+                for (int di = -LAKE_RADIUS; di <= LAKE_RADIUS; di++) {
+                    for (int dj = -LAKE_RADIUS; dj <= LAKE_RADIUS; dj++) {
+                        int distance = di * di + dj * dj;
+                        if (distance < nearest && !lake[(i + LAKE_RADIUS + di) * stride + j + LAKE_RADIUS + dj]) {
+                            nearest = distance;
+                        }
+                    }
+                }
+                double base = nearest == Integer.MAX_VALUE ? LAKE_DEPTH
+                        : Math.min(LAKE_DEPTH, Math.floor(Math.sqrt(nearest) * LAKE_SLOPE));
+                double noise = bedNoise(seed, x0 + i, z0 + j) * LAKE_NOISE * base / LAKE_DEPTH;
+                depths[i * height + j] = Math.max(0, (int) Math.round(base + noise));
+            }
+        }
+        return depths;
+    }
+
+    /** Smooth noise in [-1, 1] at the column (x, z): two octaves of value noise, from the seed. */
+    private static double bedNoise(long seed, int x, int z) {
+        return (valueNoise(seed, x, z, LAKE_NOISE_CELL) * 2 + valueNoise(seed + 1, x, z, LAKE_NOISE_CELL / 3)) / 3;
+    }
+
+    private static double valueNoise(long seed, int x, int z, int cell) {
+        int cx = Math.floorDiv(x, cell);
+        int cz = Math.floorDiv(z, cell);
+        double fx = (double) Math.floorMod(x, cell) / cell;
+        double fz = (double) Math.floorMod(z, cell) / cell;
+        fx = fx * fx * (3 - 2 * fx);
+        fz = fz * fz * (3 - 2 * fz);
+        double top = lerp(corner(seed, cx, cz), corner(seed, cx + 1, cz), fx);
+        double bottom = lerp(corner(seed, cx, cz + 1), corner(seed, cx + 1, cz + 1), fx);
+        return lerp(top, bottom, fz);
+    }
+
+    private static double lerp(double a, double b, double t) {
+        return a + (b - a) * t;
+    }
+
+    /** A pseudo-random value in [-1, 1] for a corner of the grid of the noise. */
+    private static double corner(long seed, int cx, int cz) {
+        long h = seed ^ cx * 0x9E3779B97F4A7C15L ^ cz * 0xC2B2AE3D27D4EB4FL;
+        h ^= h >>> 32;
+        h *= 0xD6E8FEB86659FD93L;
+        h ^= h >>> 32;
+        return (h & 0xFFFF) / 32767.5 - 1;
     }
 
     /**
@@ -405,36 +496,6 @@ public final class RealisticGenerator extends ChunkGenerator {
         return Math.min(w, d) + "x" + Math.max(w, d) + "x" + Math.round(box.getHeight());
     }
 
-    /** Debug: log the volumes of the pieces of each village. */
-    private static final boolean DEBUG_VILLAGE_LOG = true;
-    /** Debug: the villages already logged, so that each is told once and not for every chunk. */
-    private final Set<String> loggedVillages = ConcurrentHashMap.newKeySet();
-
-    /**
-     * Debug: the pieces of a village grouped by volume (the same whatever the rotation), with how many there are and where
-     * one of them is, to tell the models apart in the game.
-     */
-    private void logVillage(String name, GeneratedStructure structure) {
-        BoundingBox whole = structure.getBoundingBox();
-        // Without the Y: the height of the box of a village changes while its pieces are placed.
-        if (!loggedVillages.add(name + (int) whole.getMinX() + "," + (int) whole.getMinZ() + ","
-                + (int) whole.getMaxX() + "," + (int) whole.getMaxZ())) {
-            return;
-        }
-        Map<Integer, List<BoundingBox>> byVolume = new TreeMap<>();
-        for (StructurePiece piece : structure.getPieces()) {
-            BoundingBox b = piece.getBoundingBox();
-            byVolume.computeIfAbsent((int) Math.round(b.getVolume()),k -> new ArrayList<>()).add(b);
-        }
-        plugin.getLogger().info("Village " + name + " " + structure.getBoundingBox() + ": " + structure.getPieces().size()
-                + " pieces, " + byVolume.size() + " volumes");
-        for (Map.Entry<Integer, List<BoundingBox>> entry : byVolume.entrySet()) {
-            BoundingBox b = entry.getValue().get(0);
-            plugin.getLogger().info("  volume " + entry.getKey() + " x" + entry.getValue().size() + "  e.g. x " + (int) b.getMinX()
-                    + " y " + (int) b.getMinY() + " z " + (int) b.getMinZ());
-        }
-    }
-
     /** Biome at (x, y, z), from the layers of {@code world.bin}. */
     Biome biomeAt(int x, int y, int z) {
         Biome biome = data().biomeAt(x, y, z);
@@ -455,6 +516,12 @@ public final class RealisticGenerator extends ChunkGenerator {
     public int getBaseHeight(WorldInfo worldInfo, Random random, int x, int z, HeightMap heightMap) {
         int top = data().heightAt(x, z);
         boolean seabed = heightMap == HeightMap.OCEAN_FLOOR || heightMap == HeightMap.OCEAN_FLOOR_WG;
+        if (seabed) {
+            int[] depth = lakeDepths(data(), worldInfo.getSeed(), x, z, 1, 1);
+            if (depth != null && depth[0] >= 0) {
+                top -= depth[0]; // the bed of a lake, under its water
+            }
+        }
         return (seabed ? top : Math.max(top, SEA_LEVEL)) + 1;
     }
 

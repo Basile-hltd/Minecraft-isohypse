@@ -221,7 +221,12 @@ final class HeightScale {
                 done += from.transferTo(heights.offset() + done, heights.bytes() - done, to);
             }
         }
-        Built built = appendLayers(part, directory, settings, seed, logger);
+        MappedFile.deleteStale(dir); // scratch files of an interrupted build
+        Built built;
+        // The heights are read from heightmap.bin, mapped: closed before world.bin is moved into place.
+        try (HeightMapData data = HeightMapData.fromWorld(heightmap)) {
+            built = appendLayers(part, directory, data, dir, settings, seed, logger);
+        }
 
         String text = Files.readString(settingsFile.toPath(), StandardCharsets.UTF_8);
         text = replaceBlock(text, "  \"temp\": \\{[^}]*\\}", settings.tempJson());
@@ -278,18 +283,23 @@ final class HeightScale {
      * which holds the header and the layer {@code height} (nothing else yet). Each is a byte per cell: the zone of
      * {@link TempLayout}, or the index of the biome of {@link BiomeLayout} (0 for none) in the palette.
      */
-    private static Built appendLayers(File file, WorldFile.Directory directory, TerrainSettings settings, long seed,
-                                      Logger logger) throws IOException {
+    private static Built appendLayers(File file, WorldFile.Directory directory, HeightMapData data, File dir,
+                                      TerrainSettings settings, long seed, Logger logger) throws IOException {
         WorldFile.Layer first = directory.layer(WorldFile.TEMP);
         if (Files.size(file.toPath()) != first.offset()) {
             throw new IOException("world.bin: the layer temp does not follow the heights: " + file);
         }
         long started = System.nanoTime();
-        HeightMapData data = HeightMapData.fromWorld(file);
-        long read = millis(started);
-        started = System.nanoTime();
-        TempLayout temp = TempLayout.build(data, SEA_LEVEL, settings, logger);
-        long built = millis(started);
+        long read = 0; // the heights are mapped, not read
+        try (TempLayout temp = TempLayout.build(data, SEA_LEVEL, settings, dir, logger)) {
+            return writeLayers(file, directory, data, temp, seed, logger, read, millis(started));
+        }
+    }
+
+    private static Built writeLayers(File file, WorldFile.Directory directory, HeightMapData data, TempLayout temp, long seed,
+                                     Logger logger, long read, long built) throws IOException {
+        WorldFile.Layer first = directory.layer(WorldFile.TEMP);
+        long started;
         List<TempLayout.Zone> zones = temp.all();
         BiomeLayout biomes = new BiomeLayout(SEA_LEVEL, seed, temp);
         List<String> palette = palette();

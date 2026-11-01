@@ -210,7 +210,9 @@ public final class IsohypsePlugin extends JavaPlugin implements Listener {
                 c.getDouble("realistic.temp.warm_ocean_share", d.warmOceanShare()),
                 c.getDouble("realistic.temp.normal_ocean_share", d.normalOceanShare()),
                 c.getDouble("realistic.temp.warm_land_share", d.warmLandShare()),
-                c.getDouble("realistic.temp.normal_land_share", d.normalLandShare()));
+                c.getDouble("realistic.temp.normal_land_share", d.normalLandShare()),
+                c.getInt("realistic.temp.lake_min_size", d.lakeMinSize()),
+                c.getInt("realistic.temp.lake_smoothing", d.lakeSmoothing()));
     }
 
     /** Prints the real-world point (latitude, longitude) that the Realistic style puts at x=0, z=0. */
