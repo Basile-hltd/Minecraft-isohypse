@@ -209,6 +209,16 @@ final class TempLayout implements AutoCloseable {
         return level < warmTop ? LandType.WARM : level < normalTop ? LandType.NORMAL : LandType.COLD;
     }
 
+    /** The lakes of the map (the flats), to dig their beds into the heights. */
+    LakeMask lakes() {
+        return lakes;
+    }
+
+    /** The rivers of the map, to dig their channels into the heights. */
+    RiverMask rivers() {
+        return rivers;
+    }
+
     /** Every zone, bottom to top, then the lakes and the rivers (they come over the others, the lakes over the rivers). */
     List<Zone> all() {
         return List.of(deepSea, ocean, warmOcean, beach, warm, normal, cold, lake, river);

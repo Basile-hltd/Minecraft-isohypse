@@ -331,7 +331,62 @@ final class HeightScale {
                     + " ms, couche des zones " + zonesMs + " ms, biomes de surface " + surfaceMs + " ms, grottes " + cavesMs
                     + " ms, grottes profondes " + deepMs + " ms");
         }
+        carveHeights(file, directory, data, temp, seed, logger);
         return new Built(zones, palette);
+    }
+
+    /** The relief the {@link Carver} reads while {@code world.bin} is built: the raw heights and the masks of the zones. */
+    private record BuildRelief(HeightMapData data, LakeMask lakes, RiverMask rivers) implements Relief {
+
+        @Override
+        public int heightAt(int x, int z) {
+            return data.heightAt(x, z);
+        }
+
+        @Override
+        public boolean lakeAt(int x, int z) {
+            return lakes.contains(x, z);
+        }
+
+        @Override
+        public boolean riverAt(int x, int z) {
+            return rivers.contains(x, z);
+        }
+    }
+
+    /**
+     * Digs the lakes and the rivers into the layer {@code height} of {@code file}: each column gets its carved solid top
+     * ({@link Carver}), read from the raw heights and the masks, written back as a big-endian 16-bit value. Done tile by
+     * tile so the carving of each only reads a bounded margin around it; the raw heights ({@code data}) are never changed,
+     * so no carved column feeds the carving of another.
+     */
+    private static void carveHeights(File file, WorldFile.Directory directory, HeightMapData data, TempLayout temp,
+                                     long seed, Logger logger) throws IOException {
+        long started = System.nanoTime();
+        WorldFile.Layer layer = directory.layer(WorldFile.HEIGHT);
+        int width = directory.width();
+        int height = directory.height();
+        int tile = 64;
+        Relief relief = new BuildRelief(data, temp.lakes(), temp.rivers());
+        try (MappedFile map = MappedFile.writable(file, layer.offset(), layer.bytes())) {
+            MemorySegment segment = map.segment();
+            for (int row0 = 0; row0 < height; row0 += tile) {
+                int rows = Math.min(tile, height - row0);
+                for (int col0 = 0; col0 < width; col0 += tile) {
+                    int cols = Math.min(tile, width - col0);
+                    int[] carved = Carver.carveTile(relief, seed, col0 - width / 2, row0 - height / 2, cols, rows);
+                    for (int i = 0; i < cols; i++) {
+                        for (int j = 0; j < rows; j++) {
+                            int value = carved[i * rows + j];
+                            long index = 2L * ((long) (row0 + j) * width + col0 + i);
+                            segment.set(MappedFile.BYTE, index, (byte) (value >> 8));
+                            segment.set(MappedFile.BYTE, index + 1, (byte) value);
+                        }
+                    }
+                }
+            }
+        }
+        logger.info("lacs et rivières creusés dans les hauteurs de world.bin : " + millis(started) + " ms");
     }
 
     /** Writes a layer of one byte per cell, band by band. */

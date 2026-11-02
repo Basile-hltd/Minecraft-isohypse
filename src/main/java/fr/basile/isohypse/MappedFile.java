@@ -33,7 +33,7 @@ final class MappedFile implements AutoCloseable {
     private final Path scratch; // deleted on close, null for a window on an existing file
 
     private MappedFile(Path path, FileChannel.MapMode mode, long offset, long bytes, boolean scratch) throws IOException {
-        StandardOpenOption[] options = scratch
+        StandardOpenOption[] options = mode == FileChannel.MapMode.READ_WRITE
                 ? new StandardOpenOption[]{StandardOpenOption.READ, StandardOpenOption.WRITE}
                 : new StandardOpenOption[]{StandardOpenOption.READ};
         try (FileChannel channel = FileChannel.open(path, options)) {
@@ -56,6 +56,11 @@ final class MappedFile implements AutoCloseable {
     /** A read-only window on {@code bytes} bytes of {@code file} from {@code offset}. */
     static MappedFile readOnly(File file, long offset, long bytes) throws IOException {
         return new MappedFile(file.toPath(), FileChannel.MapMode.READ_ONLY, offset, bytes, false);
+    }
+
+    /** A read-write window on {@code bytes} bytes of {@code file} from {@code offset} (the file is kept, not deleted). */
+    static MappedFile writable(File file, long offset, long bytes) throws IOException {
+        return new MappedFile(file.toPath(), FileChannel.MapMode.READ_WRITE, offset, bytes, false);
     }
 
     /** Deletes the scratch files an interrupted build left in {@code dir}. */
