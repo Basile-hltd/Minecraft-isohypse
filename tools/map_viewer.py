@@ -19,6 +19,7 @@ The colours are the viewer's own: the plugin only gives names.
 
 Usage :
     pip install -r tools/requirements.txt
+    # tkinter is not a pip package: install it with your OS (Debian/Ubuntu: sudo apt install python3-tk)
     python tools/map_viewer.py [folder] [--server-jar PATH]        (default folder : tmp/server/plugins/Isohypse)
 
 Mouse : wheel = zoom, drag = move, double click = copy a /tp command to the clipboard.

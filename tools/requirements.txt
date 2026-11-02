@@ -2,3 +2,8 @@ requests>=2.31
 pyyaml>=6.0
 pillow>=10.0
 numpy>=1.26
+
+# map_viewer.py also needs tkinter, which is NOT a pip package: it ships with your OS's Python.
+#   Debian/Ubuntu : sudo apt install python3-tk
+#   Fedora        : sudo dnf install python3-tkinter
+#   macOS (brew)  : brew install python-tk

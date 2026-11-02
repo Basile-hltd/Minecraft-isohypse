@@ -54,8 +54,8 @@ final class TempLayout implements AutoCloseable {
             // of the map (up to the sea level).
             lakes = new LakeMask(data, settings.lakeMinSize(), settings.lakeSmoothing(), seaLevel, dir, logger, "lacs");
             // The rivers leave the lakes and follow the relief down, to a lower lake, the sea or another river.
-            rivers = new RiverMask(data, lakes, settings.riverClimb(), settings.riverWidth(), seaLevel, dir, logger,
-                    "rivières");
+            rivers = new RiverMask(data, lakes, settings.riverClimb(), settings.riverWidth(), settings.riverLakeSnap(),
+                    seaLevel, dir, logger, "rivières");
             return new TempLayout(seaLevel, data.highest(), seaSmoothing, landSmoothing, seaDistance, lakes, rivers,
                     settings);
         } catch (IOException | RuntimeException | Error e) {

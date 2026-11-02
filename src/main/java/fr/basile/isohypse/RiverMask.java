@@ -6,8 +6,10 @@ import java.lang.foreign.MemorySegment;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.PriorityQueue;
+import java.util.Set;
 import java.util.logging.Logger;
 
 /**
@@ -15,7 +17,8 @@ import java.util.logging.Logger;
  * follows the relief down, as water does: at each step it goes to the lowest column next to it when there is one lower
  * than its level; else it spills over the lowest way out, climbing at most {@code climb} blocks over its level (the
  * digger of the river cuts such a pass); when there is no way out, the river stops. It ends in a lower lake, in the sea
- * (the columns at or under {@code excludeUpTo}), or in another river (a confluence). The path is then smoothed and its
+ * (the columns at or under {@code excludeUpTo}), or in another river (a confluence). It also ends in a lake it merely
+ * passes close to: when a lake is within {@code snap} blocks of its path, the river is carried straight to it. The path is then smoothed and its
  * columns are put in the mask with a width that grows at each confluence: {@code riverWidth} blocks for one source,
  * times the square root of the number of sources upstream. The paths are short lists of columns and the mask is one bit
  * per column in a scratch file ({@link MappedFile}): nothing big is in the heap. The map is not wrapped around.
@@ -121,10 +124,11 @@ final class RiverMask implements AutoCloseable {
     /**
      * @param climb the most blocks a river climbs over its level to get out of a hollow
      * @param riverWidth the width, in blocks, of a river with one source; 0 for no river at all
+     * @param snap a river that comes within this many blocks of a lake connects to it and ends there; 0 for none
      * @param excludeUpTo the columns at or under this height are the sea: a river ends there and is never put there
      */
-    RiverMask(HeightMapData data, LakeMask lakes, int climb, int riverWidth, int excludeUpTo, File dir, Logger logger,
-              String label) throws IOException {
+    RiverMask(HeightMapData data, LakeMask lakes, int climb, int riverWidth, int snap, int excludeUpTo, File dir,
+              Logger logger, String label) throws IOException {
         this.width = data.width();
         this.height = data.height();
         this.bitsFile = MappedFile.scratch(dir, ((long) width * height + 7) / 8);
@@ -133,15 +137,15 @@ final class RiverMask implements AutoCloseable {
             return;
         }
         try {
-            find(data, lakes, climb, riverWidth, excludeUpTo, logger, label, dir);
+            find(data, lakes, climb, riverWidth, snap, excludeUpTo, logger, label, dir);
         } catch (IOException | RuntimeException | Error e) {
             bitsFile.close();
             throw e;
         }
     }
 
-    private void find(HeightMapData data, LakeMask lakes, int climb, int riverWidth, int excludeUpTo, Logger logger,
-                      String label, File dir) throws IOException {
+    private void find(HeightMapData data, LakeMask lakes, int climb, int riverWidth, int snap, int excludeUpTo,
+                      Logger logger, String label, File dir) throws IOException {
         long total = (long) width * height;
         int[] ends = new int[4]; // rivers that end in a lake, in the sea, in another river, or stuck
         try (MappedFile visitedFile = MappedFile.scratch(dir, (total + 7) / 8)) {
@@ -164,8 +168,10 @@ final class RiverMask implements AutoCloseable {
                     int outletHeight = Integer.MAX_VALUE;
                     int head = 0;
                     int tail = 0;
+                    Set<Long> sourceLake = new HashSet<>(); // the columns of this lake, left out of the river's snap
                     queue[tail++] = index;
                     set(visited, index);
+                    sourceLake.add(index);
                     while (head < tail) {
                         long cell = queue[head++];
                         int column = (int) (cell % width);
@@ -180,6 +186,7 @@ final class RiverMask implements AutoCloseable {
                             if (lakes.at(c, r)) {
                                 if (!isSet(visited, next)) {
                                     set(visited, next);
+                                    sourceLake.add(next);
                                     if (tail == queue.length) {
                                         queue = Arrays.copyOf(queue, tail * 2);
                                     }
@@ -197,7 +204,7 @@ final class RiverMask implements AutoCloseable {
                         }
                     }
                     if (outlet >= 0 && outletHeight <= level + climb) {
-                        int end = trace(data, lakes, outlet, level, climb, excludeUpTo);
+                        int end = trace(data, lakes, outlet, level, climb, snap, excludeUpTo, sourceLake);
                         if (end >= 0) {
                             ends[end]++;
                         }
@@ -214,11 +221,14 @@ final class RiverMask implements AutoCloseable {
     }
 
     /**
-     * Follows the relief from the outlet of a lake of this level.
+     * Follows the relief from the outlet of a lake of this level. At each step, if a lake other than the one it left
+     * ({@code sourceLake}) lies within {@code snap} blocks, the river is carried to its nearest column in a straight line
+     * and ends there (a confluence with the lake).
      *
      * @return how the river ended: 0 in a lake, 1 in the sea, 2 in another river, 3 stuck; -1 if it is too short to keep
      */
-    private int trace(HeightMapData data, LakeMask lakes, long outlet, int lakeLevel, int climb, int excludeUpTo) {
+    private int trace(HeightMapData data, LakeMask lakes, long outlet, int lakeLevel, int climb, int snap, int excludeUpTo,
+                      Set<Long> sourceLake) {
         if (onRiver.get(outlet) >= 0) {
             return -1;
         }
@@ -255,6 +265,12 @@ final class RiverMask implements AutoCloseable {
                     end = 1;
                     break walk;
                 }
+                long lakeCell = snap > 0 ? nearestLake(lakes, cell, snap, sourceLake) : -1;
+                if (lakeCell >= 0) {
+                    bridge(path, cell, lakeCell);
+                    end = 0;
+                    break walk;
+                }
             }
             long last = leg[leg.length - 1];
             long before = leg.length > 1 ? leg[leg.length - 2] : current;
@@ -274,6 +290,51 @@ final class RiverMask implements AutoCloseable {
         rivers.add(new int[] {start, path.size, joined >= 0 ? onRiver.get(joined) : -1});
         joinedCell.add(new long[] {joined});
         return end;
+    }
+
+    /**
+     * The lake column closest (by straight-line distance) to {@code from} within {@code snap} blocks, or -1 if none.
+     * The column {@code from} itself is already known not to be a lake, and the columns of {@code sourceLake} (the lake
+     * the river left) are skipped so it does not snap straight back to its own source.
+     */
+    private long nearestLake(LakeMask lakes, long from, int snap, Set<Long> sourceLake) {
+        int column = (int) (from % width);
+        int row = (int) (from / width);
+        long best = -1;
+        int bestDistance = snap * snap + 1;
+        for (int dz = -snap; dz <= snap; dz++) {
+            int r = row + dz;
+            if (r < 0 || r >= height) {
+                continue;
+            }
+            for (int dx = -snap; dx <= snap; dx++) {
+                int c = column + dx;
+                if (c < 0 || c >= width) {
+                    continue;
+                }
+                int distance = dx * dx + dz * dz;
+                long candidate = (long) r * width + c;
+                if (distance < bestDistance && lakes.at(c, r) && !sourceLake.contains(candidate)) {
+                    bestDistance = distance;
+                    best = candidate;
+                }
+            }
+        }
+        return best;
+    }
+
+    /** Adds the columns of the straight line from just after {@code from} up to {@code to} (included) to {@code path}. */
+    private void bridge(Longs path, long from, long to) {
+        int x0 = (int) (from % width);
+        int z0 = (int) (from / width);
+        int x1 = (int) (to % width);
+        int z1 = (int) (to / width);
+        int steps = Math.max(Math.abs(x1 - x0), Math.abs(z1 - z0));
+        for (int i = 1; i <= steps; i++) {
+            int c = x0 + (int) Math.round((double) (x1 - x0) * i / steps);
+            int r = z0 + (int) Math.round((double) (z1 - z0) * i / steps);
+            path.add((long) r * width + c);
+        }
     }
 
     private int valueAt(HeightMapData data, long cell) {

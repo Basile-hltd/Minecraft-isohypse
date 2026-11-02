@@ -24,6 +24,7 @@ realistic:
     lake_smoothing: 2          # rayon (blocs) du filtre qui arrondit les angles des lacs (ne change que les bords) ; 0 : aucun
     river_climb: 3             # une rivière part d'un lac et descend le relief ; elle passe un col jusqu'à tant de blocs au-dessus de son niveau (le creuseur le coupe), sinon elle s'arrête
     river_width: 3             # largeur (blocs) d'une rivière à une source, elle grandit à chaque confluence ; 0 : aucune rivière
+    river_lake_snap: 10        # une rivière qui passe à tant de blocs ou moins d'un lac s'y connecte et s'arrête là ; 0 : aucun
 
 # Monde : hauteur maximale de l'overworld (le sol reste à y=-64). Arrondie à la valeur la plus proche acceptée par le jeu :
 # un multiple de 16 de 128 à 2032 ; 320 est la valeur de Minecraft (rien n'est changé). Ne s'applique qu'à un monde qui
