@@ -20,12 +20,15 @@ import java.util.Locale;
  * @param normalLandShare ...and normal; the rest of the land is cold
  * @param lakeMinSize a flat (columns of exactly the same height) at least this many blocks wide and tall is a lake; 0 for none
  * @param lakeSmoothing radius, in blocks, of the filter that rounds the corners of the lakes; 0 for none
+ * @param riverClimb the most blocks a river climbs over its level to get out of a hollow (the digger cuts the pass)
+ * @param riverWidth width, in blocks, of a river with one source (it grows at each confluence); 0 for no river
  */
 record TerrainSettings(int oceanDepth, int beachDepth, int beachHeight, int beachInlandDistance, int oceanBlur, int landBlur, double warmOceanShare,
-                       double normalOceanShare, double warmLandShare, double normalLandShare, int lakeMinSize, int lakeSmoothing) {
+                       double normalOceanShare, double warmLandShare, double normalLandShare, int lakeMinSize, int lakeSmoothing,
+                       int riverClimb, int riverWidth) {
 
     static final TerrainSettings DEFAULTS = new TerrainSettings(30, 3, 5, 20, 150, 50,
-            1.0 / 3, 1.0 / 3, 0.35, 0.45, 50, 2);
+            1.0 / 3, 1.0 / 3, 0.35, 0.45, 50, 2, 3, 3);
 
     TerrainSettings {
         require(oceanDepth >= 0, "ocean_depth must be 0 or more");
@@ -33,6 +36,7 @@ record TerrainSettings(int oceanDepth, int beachDepth, int beachHeight, int beac
         require(beachInlandDistance >= 0 && oceanBlur >= 0 && landBlur >= 0,
                 "beach_inland_distance, ocean_blur and land_blur must be 0 or more");
         require(lakeMinSize >= 0 && lakeSmoothing >= 0, "lake_min_size and lake_smoothing must be 0 or more");
+        require(riverClimb >= 0 && riverWidth >= 0, "river_climb and river_width must be 0 or more");
         require(warmOceanShare >= 0 && normalOceanShare >= 0 && warmOceanShare + normalOceanShare <= 1,
                 "warm_ocean_share and normal_ocean_share: 0 or more, 1 at most together");
         require(warmLandShare >= 0 && normalLandShare >= 0 && warmLandShare + normalLandShare <= 1,
@@ -63,7 +67,8 @@ record TerrainSettings(int oceanDepth, int beachDepth, int beachHeight, int beac
                 + line("land_blur", landBlur) + line("warm_ocean_share", warmOceanShare)
                 + line("normal_ocean_share", normalOceanShare) + line("warm_land_share", warmLandShare)
                 + line("normal_land_share", normalLandShare) + line("lake_min_size", lakeMinSize)
-                + lineLast("lake_smoothing", lakeSmoothing) + "  }";
+                + line("lake_smoothing", lakeSmoothing) + line("river_climb", riverClimb)
+                + lineLast("river_width", riverWidth) + "  }";
     }
 
     static String line(String key, Number value) {

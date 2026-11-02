@@ -60,6 +60,7 @@ ZONE_COLORS = {
     "ocean_cold": 0x14347A, "ocean_normal": 0x1F4FA3, "ocean_warm": 0x3FC0D0,
     "beach": 0xF0E0A0, "warm": 0xE8A23C, "normal": 0x6AA84F, "cold": 0xDDE6EE,
     "lake": 0xE020E0,   # magenta, to be seen over the sea and the land while the lakes are checked
+    "river": 0xFF8000,  # orange, same reason
 }
 
 # The colours of the biomes, by name (those of the former maps).

@@ -40,6 +40,7 @@ final class TempLayout implements AutoCloseable {
         }
         ShoreDistance seaDistance = null;
         LakeMask lakes = null;
+        RiverMask rivers = null;
         try {
             seaDistance = new ShoreDistance(data, v -> v < beachStart, settings.beachInlandDistance(), dir, logger,
                     "distance à la mer des plages");
@@ -52,9 +53,16 @@ final class TempLayout implements AutoCloseable {
             // The lakes come last: the flats of the height map, over the zones above, but never in what is already the sea
             // of the map (up to the sea level).
             lakes = new LakeMask(data, settings.lakeMinSize(), settings.lakeSmoothing(), seaLevel, dir, logger, "lacs");
-            return new TempLayout(seaLevel, data.highest(), seaSmoothing, landSmoothing, seaDistance, lakes, settings);
+            // The rivers leave the lakes and follow the relief down, to a lower lake, the sea or another river.
+            rivers = new RiverMask(data, lakes, settings.riverClimb(), settings.riverWidth(), seaLevel, dir, logger,
+                    "rivières");
+            return new TempLayout(seaLevel, data.highest(), seaSmoothing, landSmoothing, seaDistance, lakes, rivers,
+                    settings);
         } catch (IOException | RuntimeException | Error e) {
             seaSmoothing.close();
+            if (rivers != null) {
+                rivers.close();
+            }
             if (lakes != null) {
                 lakes.close();
             }
@@ -72,6 +80,7 @@ final class TempLayout implements AutoCloseable {
         seaSmoothing.close();
         landSmoothing.close();
         lakes.close();
+        rivers.close();
     }
 
     private final Zone deepSea;
@@ -82,11 +91,13 @@ final class TempLayout implements AutoCloseable {
     private final Zone normal;
     private final Zone cold;
     private final Zone lake;
+    private final Zone river;
 
     private final ShoreDistance seaDistance;
     private final HeightSmoothing seaSmoothing;
     private final HeightSmoothing landSmoothing;
     private final LakeMask lakes;
+    private final RiverMask rivers;
     /** The limits between the sea zones, in quarters of a block from the shore. */
     private final int warmOceanLimit;
     private final int oceanLimit;
@@ -100,11 +111,13 @@ final class TempLayout implements AutoCloseable {
      * @param landSmoothing the filtered land, which the land zones are told apart on
      * @param seaDistance which columns are far enough from the nearest sea, to turn the inland beach to warm land
      * @param lakes the flats of the height map, which are lakes whatever the zone under them
+     * @param rivers the courses from the lakes down to a lower lake or the sea, over the land zones (a lake is over them)
      */
     TempLayout(int seaLevel, int highest, HeightSmoothing seaSmoothing, HeightSmoothing landSmoothing,
-               ShoreDistance seaDistance, LakeMask lakes, TerrainSettings settings) {
+               ShoreDistance seaDistance, LakeMask lakes, RiverMask rivers, TerrainSettings settings) {
         this.seaDistance = seaDistance;
         this.lakes = lakes;
+        this.rivers = rivers;
         this.seaSmoothing = seaSmoothing;
         this.landSmoothing = landSmoothing;
         this.beachStart = settings.beachStart(seaLevel);
@@ -125,6 +138,7 @@ final class TempLayout implements AutoCloseable {
         this.normal = new Zone("normal", warmTop + " à " + normalTop);
         this.cold = new Zone("cold", normalTop + " à " + highest);
         this.lake = new Zone("lake", "plat d'au moins " + settings.lakeMinSize() + " x " + settings.lakeMinSize() + " blocs");
+        this.river = new Zone("river", "descend d'un lac, remonte au plus de " + settings.riverClimb() + " blocs");
     }
 
     /**
@@ -164,6 +178,9 @@ final class TempLayout implements AutoCloseable {
         if (lakes.contains(x, z)) {
             return lake;
         }
+        if (rivers.contains(x, z)) {
+            return river;
+        }
         if (top < beachStart) { // the sea
             return switch (oceanTypeAt(x, z)) {
                 case WARM -> warmOcean;
@@ -192,8 +209,8 @@ final class TempLayout implements AutoCloseable {
         return level < warmTop ? LandType.WARM : level < normalTop ? LandType.NORMAL : LandType.COLD;
     }
 
-    /** Every zone, bottom to top, then the lakes (they come over the others). */
+    /** Every zone, bottom to top, then the lakes and the rivers (they come over the others, the lakes over the rivers). */
     List<Zone> all() {
-        return List.of(deepSea, ocean, warmOcean, beach, warm, normal, cold, lake);
+        return List.of(deepSea, ocean, warmOcean, beach, warm, normal, cold, lake, river);
     }
 }

@@ -50,6 +50,16 @@ public final class RealisticGenerator extends ChunkGenerator {
     private static final double LAKE_NOISE = 1.0;
     /** The size, in blocks, of the cells of the first octave of the noise of the bed (the second is a third of it). */
     private static final int LAKE_NOISE_CELL = 12;
+    /** The depth, in blocks, of the channel of a river under its water level (less at the banks). */
+    private static final int RIVER_DEPTH = 3;
+    /** How far from a river, in blocks, the ground is lowered to its banks (fading out, so there is no wall at the end). */
+    private static final int RIVER_REACH = 16;
+    /** The water level of a river is the lowest river column within this radius, so it is flat across the river. */
+    private static final int RIVER_LEVEL_RADIUS = 2;
+    /** How far the noise moves the bed of a river, up or down, in blocks, where it is deepest. */
+    private static final double RIVER_NOISE = 1.0;
+    /** Marks a column that the rivers leave as it is. */
+    private static final int NO_RIVER = Integer.MIN_VALUE;
     /** Under a sea, the caves only start this many blocks under the lowest point of the sea floor of the map. */
     private static final int CARVER_SEA_MARGIN = 8;
     /** Under a village, the caves only start this many blocks under its ground (over the whole box of the village). */
@@ -286,6 +296,7 @@ public final class RealisticGenerator extends ChunkGenerator {
         int minY = chunkData.getMinHeight();
         List<Flat> flats = flats(worldInfo, data, chunkX, chunkZ);
         int[] lakeDepths = lakeDepths(data, worldInfo.getSeed(), chunkX * 16, chunkZ * 16, 16, 16);
+        River rivers = riverTops(data, worldInfo.getSeed(), chunkX * 16, chunkZ * 16, 16, 16);
         for (int localX = 0; localX < 16; localX++) {
             for (int localZ = 0; localZ < 16; localZ++) {
                 int x = chunkX * 16 + localX;
@@ -298,9 +309,18 @@ public final class RealisticGenerator extends ChunkGenerator {
                     chunkData.setRegion(localX, bed + 1, localZ, localX + 1, top + 1, localZ + 1, Material.WATER);
                     continue;
                 }
+                int index = localX * 16 + localZ;
+                boolean carved = rivers != null && rivers.top(index, top) != top;
+                if (rivers != null) {
+                    top = rivers.top(index, top); // the channel of a river and its banks
+                }
                 top = groundAt(flats, x, z, top);
                 chunkData.setRegion(localX, minY, localZ, localX + 1, top + 1, localZ + 1, Material.STONE);
-                if (top < SEA_LEVEL) {
+                if (rivers != null && rivers.isRiver(index) && rivers.levels()[index] > top) {
+                    // A river: the bed is the ground, the water is at the level of the river.
+                    chunkData.setRegion(localX, top + 1, localZ, localX + 1, rivers.levels()[index] + 1, localZ + 1,
+                            Material.WATER);
+                } else if (top < SEA_LEVEL && !carved) {
                     chunkData.setRegion(localX, top + 1, localZ, localX + 1, SEA_LEVEL + 1, localZ + 1, Material.WATER);
                 }
             }
@@ -353,6 +373,129 @@ public final class RealisticGenerator extends ChunkGenerator {
             }
         }
         return depths;
+    }
+
+    /**
+     * The Y of the top block of the columns of the area of {@code width} x {@code height} columns from (x0, z0), by
+     * {@code (x - x0) * height + (z - z0)}, once the rivers have cut their channel: {@link #NO_RIVER} for a column that
+     * they leave as it is, null when there is none in the area. The water level of a river column is the lowest river
+     * column around it (flat across the river, following the course down); its bed is under it, from 1 block at the
+     * banks of the river up to {@link #RIVER_DEPTH} in the middle, moved by a noise. The ground next to the river is
+     * lowered to a bank that rises by 1 block per block from the water level, the lowering fading out to nothing
+     * {@link #RIVER_REACH} blocks from the river. The ground is only ever lowered.
+     */
+    private static River riverTops(WorldData data, long seed, int x0, int z0, int width, int height) {
+        int margin = RIVER_REACH + RIVER_LEVEL_RADIUS;
+        int stride = height + 2 * margin;
+        int size = (width + 2 * margin) * stride;
+        int[] river = new int[size]; // the height of the river columns of the area and the margin around it, else NO_RIVER
+        int count = 0;
+        for (int i = 0; i < width + 2 * margin; i++) {
+            for (int j = 0; j < stride; j++) {
+                boolean is = data.riverAt(x0 - margin + i, z0 - margin + j);
+                river[i * stride + j] = is ? data.heightAt(x0 - margin + i, z0 - margin + j) : NO_RIVER;
+                count += is ? 1 : 0;
+            }
+        }
+        if (count == 0) {
+            return null;
+        }
+        int[] cells = new int[count]; // the index of each river column
+        count = 0;
+        for (int index = 0; index < size; index++) {
+            if (river[index] != NO_RIVER) {
+                cells[count++] = index;
+            }
+        }
+        int[] tops = new int[width * height];
+        int[] levels = new int[width * height];
+        boolean any = false;
+        for (int i = 0; i < width; i++) {
+            for (int j = 0; j < height; j++) {
+                int top = data.heightAt(x0 + i, z0 + j);
+                int self = (i + margin) * stride + j + margin;
+                boolean is = river[self] != NO_RIVER;
+                int result = is ? channel(river, stride, self, top, seed, x0 + i, z0 + j)
+                        : bank(river, stride, cells, self, top);
+                tops[i * height + j] = result == top ? NO_RIVER : result;
+                levels[i * height + j] = is ? waterLevel(river, stride, self) : NO_RIVER;
+                any |= is || result != top;
+            }
+        }
+        return any ? new River(tops, levels) : null;
+    }
+
+    /**
+     * What the rivers do to an area of columns (indexed as in {@link #riverTops}): {@code tops} the Y of the top block of
+     * a column they change, else {@link #NO_RIVER}; {@code levels} the Y of the water of a river column, else
+     * {@link #NO_RIVER}.
+     */
+    private record River(int[] tops, int[] levels) {
+
+        /** The top block of the column {@code index}, {@code natural} when the rivers leave it as it is. */
+        int top(int index, int natural) {
+            return tops[index] == NO_RIVER ? natural : tops[index];
+        }
+
+        boolean isRiver(int index) {
+            return levels[index] != NO_RIVER;
+        }
+    }
+
+    /** The water level of a river column: the lowest river column within {@link #RIVER_LEVEL_RADIUS} of {@code index}. */
+    private static int waterLevel(int[] river, int stride, int index) {
+        int level = Integer.MAX_VALUE;
+        for (int di = -RIVER_LEVEL_RADIUS; di <= RIVER_LEVEL_RADIUS; di++) {
+            for (int dj = -RIVER_LEVEL_RADIUS; dj <= RIVER_LEVEL_RADIUS; dj++) {
+                int other = index + di * stride + dj;
+                if (other >= 0 && other < river.length && river[other] != NO_RIVER) {
+                    level = Math.min(level, river[other]);
+                }
+            }
+        }
+        return level;
+    }
+
+    /** The top of a river column: its bed, {@code 1} to {@link #RIVER_DEPTH} blocks under the water level. */
+    private static int channel(int[] river, int stride, int self, int top, long seed, int x, int z) {
+        int level = waterLevel(river, stride, self);
+        int nearest = Integer.MAX_VALUE; // squared distance to the nearest column that is not a river, within the depth
+        for (int di = -RIVER_DEPTH; di <= RIVER_DEPTH; di++) {
+            for (int dj = -RIVER_DEPTH; dj <= RIVER_DEPTH; dj++) {
+                int other = self + di * stride + dj;
+                if (di * di + dj * dj < nearest && other >= 0 && other < river.length && river[other] == NO_RIVER) {
+                    nearest = di * di + dj * dj;
+                }
+            }
+        }
+        double base = nearest == Integer.MAX_VALUE ? RIVER_DEPTH : Math.min(RIVER_DEPTH, Math.floor(Math.sqrt(nearest)));
+        double noise = bedNoise(seed, x, z) * RIVER_NOISE * base / RIVER_DEPTH;
+        int depth = Math.max(0, (int) Math.round(base + noise));
+        return Math.min(top, level - depth);
+    }
+
+    /** The top of a column next to a river: the natural ground, lowered to the bank of the nearest river column. */
+    private static int bank(int[] river, int stride, int[] cells, int self, int top) {
+        int nearest = Integer.MAX_VALUE;
+        int from = -1;
+        int si = self / stride;
+        int sj = self % stride;
+        for (int cell : cells) {
+            int di = cell / stride - si;
+            int dj = cell % stride - sj;
+            int distance = di * di + dj * dj;
+            if (distance < nearest) {
+                nearest = distance;
+                from = cell;
+            }
+        }
+        if (nearest > RIVER_REACH * RIVER_REACH) {
+            return top;
+        }
+        double distance = Math.sqrt(nearest);
+        int cap = waterLevel(river, stride, from) + (int) Math.floor(distance) - 1;
+        double fade = Math.clamp((RIVER_REACH - distance) / (RIVER_REACH - 2), 0, 1);
+        return top - (int) Math.round(Math.max(0, top - cap) * fade);
     }
 
     /** Smooth noise in [-1, 1] at the column (x, z): two octaves of value noise, from the seed. */
@@ -516,6 +659,13 @@ public final class RealisticGenerator extends ChunkGenerator {
     public int getBaseHeight(WorldInfo worldInfo, Random random, int x, int z, HeightMap heightMap) {
         int top = data().heightAt(x, z);
         boolean seabed = heightMap == HeightMap.OCEAN_FLOOR || heightMap == HeightMap.OCEAN_FLOOR_WG;
+        River river = riverTops(data(), worldInfo.getSeed(), x, z, 1, 1);
+        if (river != null) {
+            top = river.top(0, top); // the channel of a river and its banks
+            if (!seabed && river.isRiver(0)) {
+                top = Math.max(top, river.levels()[0]); // the water of the river
+            }
+        }
         if (seabed) {
             int[] depth = lakeDepths(data(), worldInfo.getSeed(), x, z, 1, 1);
             if (depth != null && depth[0] >= 0) {
@@ -545,7 +695,7 @@ public final class RealisticGenerator extends ChunkGenerator {
      * lowest point of the sea floor minus {@link #CARVER_SEA_MARGIN} is kept. Above it, in a column covered by water,
      * every carved block (air, water or lava where there was stone) is stone again, and the water above the sea floor
      * is whole again, so the sea floor is not broken into, and the water the carvers left above the sea level is
-     * removed. On the land the caves are as the carvers made them (the water of the underground lakes stays), except under
+     * removed. A lake is treated the same way: stone up to its bed, whole water to its surface, nothing above. On the land the caves are as the carvers made them (the water of the underground lakes stays), except under
      * a village: over its whole box, nothing is carved in the {@link #VILLAGE_CAVE_MARGIN} blocks under its ground.
      */
     @Override
@@ -557,9 +707,42 @@ public final class RealisticGenerator extends ChunkGenerator {
         if (!villages.isEmpty()) {
             protectVillages(chunkData, chunkX, chunkZ, villages, flats(worldInfo, data, chunkX, chunkZ), data);
         }
+        int[] lakeDepths = lakeDepths(data, worldInfo.getSeed(), chunkX * 16, chunkZ * 16, 16, 16);
+        River rivers = riverTops(data, worldInfo.getSeed(), chunkX * 16, chunkZ * 16, 16, 16);
         for (int localX = 0; localX < 16; localX++) {
             for (int localZ = 0; localZ < 16; localZ++) {
                 int top = data.heightAt(chunkX * 16 + localX, chunkZ * 16 + localZ);
+                if (rivers != null && rivers.isRiver(localX * 16 + localZ)) {
+                    // A river, as a lake: stone under the bed, whole water to its level, no water above.
+                    int level = rivers.levels()[localX * 16 + localZ];
+                    int bed = rivers.top(localX * 16 + localZ, top);
+                    for (int y = limit + 1; y <= level; y++) {
+                        if (carved(chunkData.getType(localX, y, localZ))) {
+                            chunkData.setBlock(localX, y, localZ, y <= bed ? Material.STONE : Material.WATER);
+                        }
+                    }
+                    for (int y = level + 1; y < maxY; y++) {
+                        if (chunkData.getType(localX, y, localZ) == Material.WATER) {
+                            chunkData.setBlock(localX, y, localZ, Material.AIR);
+                        }
+                    }
+                    continue;
+                }
+                if (lakeDepths != null && lakeDepths[localX * 16 + localZ] >= 0) {
+                    // A lake, as a sea: stone under the bed, whole water over it, no air or water above the lake.
+                    int bed = top - lakeDepths[localX * 16 + localZ];
+                    for (int y = limit + 1; y <= top; y++) {
+                        if (carved(chunkData.getType(localX, y, localZ))) {
+                            chunkData.setBlock(localX, y, localZ, y <= bed ? Material.STONE : Material.WATER);
+                        }
+                    }
+                    for (int y = top + 1; y < maxY; y++) {
+                        if (chunkData.getType(localX, y, localZ) == Material.WATER) {
+                            chunkData.setBlock(localX, y, localZ, Material.AIR);
+                        }
+                    }
+                    continue;
+                }
                 if (top >= SEA_LEVEL) {
                     continue; // land
                 }

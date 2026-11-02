@@ -289,6 +289,16 @@ final class LakeMask implements AutoCloseable {
         return (bits.get(MappedFile.BYTE, index >> 3) >> (index & 7) & 1) != 0;
     }
 
+    /** Whether the pixel (column, row) of the map itself is a lake. */
+    boolean at(int column, int row) {
+        return bit(row, column);
+    }
+
+    /** The mask from the pixel {@code 8 * index}, a bit each (0 for 8 pixels without lake): to skip a map without lakes. */
+    byte byteAt(long index) {
+        return bits.get(MappedFile.BYTE, index);
+    }
+
     /** Frees the scratch file of the mask. */
     @Override
     public void close() {
