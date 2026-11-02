@@ -9,9 +9,9 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
- * The maximum height of the overworld, which the plugin changes with a datapack written at the launch of the server
- * (see {@link IsohypseBootstrap}): the vanilla dimension type and noise settings of the overworld, with a bigger
- * height. The bottom of the world stays at {@link #MIN_Y}.
+ * The datapack of the Realistic style, written at the launch of the server (see {@link IsohypseBootstrap}): the maximum
+ * height of the overworld (the vanilla dimension type and noise settings of the overworld, with a bigger height; the
+ * bottom of the world stays at {@link #MIN_Y}), and the caves of the game up in the mountains ({@link #HIGH_CAVES_FROM}).
  */
 final class WorldHeight {
 
@@ -26,6 +26,15 @@ final class WorldHeight {
 
     private static final String DIMENSION_TYPE = "data/minecraft/dimension_type/overworld.json";
     private static final String NOISE_SETTINGS = "data/minecraft/worldgen/noise_settings/overworld.json";
+    private static final String HIGH_CAVES = "data/minecraft/worldgen/carver/cave_extra_underground.json";
+    /**
+     * The carvers of the game start their caves under Y 180 (the canyons under 67): the caves of its mountains come from
+     * its noise, which this generator does not use, so the mountains were solid. The carver {@code
+     * cave_extra_underground} (in every biome of the surface, for more caves under Y 47, where the caverns are now) is
+     * made to start its caves from this Y up to {@link #HIGH_CAVES_BELOW_TOP} blocks under the top of the world.
+     */
+    static final int HIGH_CAVES_FROM = 180;
+    static final int HIGH_CAVES_BELOW_TOP = 16;
 
     private WorldHeight() {
     }
@@ -40,41 +49,87 @@ final class WorldHeight {
     }
 
     /**
-     * Writes the datapack (the folder {@code pack}) that gives the overworld the maximum height {@code maxHeight}: the
-     * vanilla overworld dimension type and noise settings, read from the server itself, with the height changed. The
-     * files are rewritten at every launch.
+     * Writes the datapack (the folder {@code pack}) of the Realistic style for a maximum height of {@code maxHeight}: the
+     * vanilla overworld dimension type and noise settings with that height (none for the vanilla height, the files of an
+     * earlier launch are then removed), and the carver of the high caves. The files are read from the server itself and
+     * rewritten at every launch.
      *
-     * @return null if it worked, else why it did not (the server then keeps the vanilla height)
+     * @return null if it worked, else why it did not (the server then keeps the vanilla height and caves)
      */
     static String writePack(Path pack, int maxHeight) {
         int height = maxHeight - MIN_Y;
         try {
-            String dimensionType = vanilla(DIMENSION_TYPE);
-            String noiseSettings = vanilla(NOISE_SETTINGS);
             String version = vanilla("version.json");
-            if (dimensionType == null || noiseSettings == null || version == null) {
-                return "the vanilla data of the overworld cannot be found in the server";
+            if (version == null) {
+                return "the version of the data of the server cannot be found";
             }
             Matcher format = Pattern.compile("\"data_major\"\\s*:\\s*(\\d+)").matcher(version);
             if (!format.find()) {
                 return "the data pack format of the server cannot be read";
             }
-            String dimension = withNumber(withNumber(dimensionType, "height", height), "logical_height", height);
-            String noise = withNumber(noiseSettings, "height", height);
-            if (dimension == null || noise == null) {
-                return "the height of the overworld is not where expected in the vanilla data";
+            String dimension = null;
+            String noise = null;
+            if (maxHeight != VANILLA_MAX_HEIGHT) {
+                String dimensionType = vanilla(DIMENSION_TYPE);
+                String noiseSettings = vanilla(NOISE_SETTINGS);
+                if (dimensionType == null || noiseSettings == null) {
+                    return "the vanilla data of the overworld cannot be found in the server";
+                }
+                dimension = withNumber(withNumber(dimensionType, "height", height), "logical_height", height);
+                noise = withNumber(noiseSettings, "height", height);
+                if (dimension == null || noise == null) {
+                    return "the height of the overworld is not where expected in the vanilla data";
+                }
             }
-            Path data = pack.resolve("data").resolve("minecraft");
-            Files.createDirectories(data.resolve("dimension_type"));
-            Files.createDirectories(data.resolve("worldgen").resolve("noise_settings"));
-            Files.writeString(pack.resolve("pack.mcmeta"), "{\"pack\":{\"description\":\"Isohypse: height of the overworld\","
+            String caves = highCaves(maxHeight);
+            Files.createDirectories(pack);
+            Files.writeString(pack.resolve("pack.mcmeta"), "{\"pack\":{\"description\":\"Isohypse: Realistic overworld\","
                     + "\"min_format\":" + format.group(1) + ",\"max_format\":" + format.group(1) + "}}");
-            Files.writeString(data.resolve("dimension_type").resolve("overworld.json"), dimension);
-            Files.writeString(data.resolve("worldgen").resolve("noise_settings").resolve("overworld.json"), noise);
+            write(pack.resolve(DIMENSION_TYPE), dimension);
+            write(pack.resolve(NOISE_SETTINGS), noise);
+            write(pack.resolve(HIGH_CAVES), caves);
             return null;
         } catch (IOException e) {
             return "writing the data pack failed: " + e;
         }
+    }
+
+    /**
+     * The carver {@code cave_extra_underground} of the game starting its caves from {@link #HIGH_CAVES_FROM} up to
+     * {@link #HIGH_CAVES_BELOW_TOP} blocks under the top of a world of this maximum height; null (the vanilla one) if the
+     * world is not that high or the vanilla file is not as expected.
+     */
+    private static String highCaves(int maxHeight) throws IOException {
+        int top = maxHeight - 1 - HIGH_CAVES_BELOW_TOP;
+        String carver = vanilla(HIGH_CAVES);
+        if (carver == null || top <= HIGH_CAVES_FROM) {
+            return null;
+        }
+        carver = withAnchor(carver, "min_inclusive", "above_bottom", HIGH_CAVES_FROM);
+        return carver == null ? null : withAnchor(carver, "max_inclusive", "absolute", top);
+    }
+
+    /** Writes {@code text} to {@code file}, or deletes the file when it is null. */
+    private static void write(Path file, String text) throws IOException {
+        if (text == null) {
+            Files.deleteIfExists(file);
+            return;
+        }
+        Files.createDirectories(file.getParent());
+        Files.writeString(file, text);
+    }
+
+    /**
+     * The JSON with the vertical anchor {@code "key": {"kind": n}} replaced by {@code "key": {"absolute": value}}; null
+     * unless it is found exactly once.
+     */
+    private static String withAnchor(String json, String key, String kind, int value) {
+        Pattern pattern = Pattern.compile("\"" + key + "\"\\s*:\\s*\\{\\s*\"" + kind + "\"\\s*:\\s*-?\\d+\\s*}");
+        Matcher matcher = pattern.matcher(json);
+        if (!matcher.find() || matcher.find()) {
+            return null;
+        }
+        return pattern.matcher(json).replaceFirst(Matcher.quoteReplacement("\"" + key + "\": {\"absolute\": " + value + "}"));
     }
 
     /** A file of the server (a resource of its jar), or null if there is none. */

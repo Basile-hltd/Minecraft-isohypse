@@ -10,3 +10,4 @@ __pycache__/
 *.bin
 pre_gen_heightmaps/
 !Ressources/*.png
+.vscode/

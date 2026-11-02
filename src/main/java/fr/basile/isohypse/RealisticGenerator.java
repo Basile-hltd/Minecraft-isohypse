@@ -11,6 +11,7 @@ import org.bukkit.World;
 import org.bukkit.generator.BiomeProvider;
 import org.bukkit.generator.BlockPopulator;
 import org.bukkit.generator.ChunkGenerator;
+import org.bukkit.generator.LimitedRegion;
 import org.bukkit.generator.WorldInfo;
 import org.bukkit.generator.structure.GeneratedStructure;
 import org.bukkit.generator.structure.StructurePiece;
@@ -24,8 +25,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.Random;
 import java.util.Set;
-import java.util.TreeMap;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.logging.Level;
 
 /**
@@ -44,6 +43,24 @@ public final class RealisticGenerator extends ChunkGenerator {
     private static final int SEA_LEVEL = HeightScale.SEA_LEVEL;
     /** Under a sea, the caves only start this many blocks under the lowest point of the sea floor of the map. */
     private static final int CARVER_SEA_MARGIN = 8;
+    /** A cavern ({@link Caverns}) stays at least this many blocks under the ground of its column. */
+    private static final int CAVERN_ROOF = 8;
+    /**
+     * The structures under the ground that the game puts in a void it digs in its own noise (terrain adaptation
+     * "beard_box"), which this generator does not use: the void is dug here ({@link #clearAround}).
+     */
+    private static final Set<String> CLEARED = Set.of("ancient_city");
+    /** The void around a piece of such a structure reaches this many blocks out of its box, across and above. */
+    private static final int CLEAR_MARGIN = 3;
+    /** Under such a piece, the ground is made solid this many blocks down (a cavern or a cave could leave it hollow). */
+    private static final int CLEAR_FLOOR = 6;
+    /**
+     * The structures under the ground that the game wraps in solid rock in its own noise (terrain adaptation
+     * "encapsulate", "bury"): the caverns and the caves around them are filled here ({@link #encase}).
+     */
+    private static final Set<String> ENCASED = Set.of("trial_chambers", "stronghold");
+    /** The rock around a piece of such a structure is this many blocks thick. */
+    private static final int ENCASE_MARGIN = 3;
     /** Under a village, the caves only start this many blocks under its ground (over the whole box of the village). */
     private static final int VILLAGE_CAVE_MARGIN = 8;
 
@@ -86,6 +103,8 @@ public final class RealisticGenerator extends ChunkGenerator {
     /** How many chunks around are searched for structures: what the widest of the shapes reaches. */
     private final int searchRadius;
     private volatile boolean lookupFailed;
+    /** The caverns of the seed of the world, made with the first chunk. */
+    private volatile Caverns caverns;
 
     RealisticGenerator(IsohypsePlugin plugin) {
         this.plugin = plugin;
@@ -175,9 +194,6 @@ public final class RealisticGenerator extends ChunkGenerator {
                 GeneratedStructure structure = entry.getValue();
                 String name = names.get(entry.getKey());
                 addFlats(name, structure, data, flats);
-                if (DEBUG_VILLAGE_LOG && name.startsWith("village")) {
-                    logVillage(name, structure);
-                }
             }
             return flats;
         } catch (RuntimeException | LinkageError e) {
@@ -280,18 +296,81 @@ public final class RealisticGenerator extends ChunkGenerator {
         WorldData data = data();
         int minY = chunkData.getMinHeight();
         List<Flat> flats = flats(worldInfo, data, chunkX, chunkZ);
+        // The lakes and the rivers are already dug into the heights of world.bin and their water is in its layer water
+        // (Carver, at build time): here we only read the top of every column, flatten it under the structures (never in a
+        // lake or a river) and fill stone up to it, then the water of a lake or a river over it, and sea water where it is
+        // under the sea level.
         for (int localX = 0; localX < 16; localX++) {
             for (int localZ = 0; localZ < 16; localZ++) {
                 int x = chunkX * 16 + localX;
                 int z = chunkZ * 16 + localZ;
-                int top = data.heightAt(x, z);
-                top = groundAt(flats, x, z, top);
+                int water = data.waterAt(x, z);
+                int top = water > 0 ? data.heightAt(x, z) : groundAt(flats, x, z, data.heightAt(x, z));
                 chunkData.setRegion(localX, minY, localZ, localX + 1, top + 1, localZ + 1, Material.STONE);
+                if (water > 0) {
+                    chunkData.setRegion(localX, top + 1, localZ, localX + 1, top + water + 1, localZ + 1, Material.WATER);
+                }
                 if (top < SEA_LEVEL) {
                     chunkData.setRegion(localX, top + 1, localZ, localX + 1, SEA_LEVEL + 1, localZ + 1, Material.WATER);
                 }
             }
         }
+        caverns(worldInfo.getSeed()).carve(chunkData, chunkX, chunkZ, (x, z) -> cavernCeiling(data, x, z));
+    }
+
+    private Caverns caverns(long seed) {
+        Caverns made = caverns;
+        if (made == null) {
+            made = new Caverns(seed);
+            caverns = made;
+        }
+        return made;
+    }
+
+    /**
+     * The highest Y a cavern reaches at the column (x, z): {@link #CAVERN_ROOF} under its ground; under a lake, a river or
+     * the sea, no higher than where {@link #generateCaves} starts filling what the carvers dug, so that it is not cut flat.
+     */
+    private static int cavernCeiling(WorldData data, int x, int z) {
+        int top = data.heightAt(x, z);
+        if (data.waterAt(x, z) > 0 || top < SEA_LEVEL) {
+            return data.lowest() - CARVER_SEA_MARGIN;
+        }
+        return top - CAVERN_ROOF;
+    }
+
+    /**
+     * The water of the lakes and the rivers is placed still by {@link #generateNoise}: a block of it next to air (a step
+     * down a river, a bank lower than the water) would hang there until a block next to it changes. This asks the game to
+     * let each of those flow once the chunk is done, as it does for the water of its own aquifers.
+     */
+    private final class WaterFlow extends BlockPopulator {
+
+        @Override
+        public void populate(WorldInfo worldInfo, Random random, int chunkX, int chunkZ, LimitedRegion region) {
+            WorldData data = data();
+            for (int x = chunkX * 16; x < chunkX * 16 + 16; x++) {
+                for (int z = chunkZ * 16; z < chunkZ * 16 + 16; z++) {
+                    int water = data.waterAt(x, z);
+                    if (water == 0) {
+                        continue;
+                    }
+                    int top = data.heightAt(x, z);
+                    // The water blocks from the lowest air next to the column up are those that can flow.
+                    int open = Math.min(Math.min(surfaceAt(data, x + 1, z), surfaceAt(data, x - 1, z)),
+                            Math.min(surfaceAt(data, x, z + 1), surfaceAt(data, x, z - 1))) + 1;
+                    for (int y = Math.max(top + 1, open); y <= top + water; y++) {
+                        region.scheduleFluidUpdate(x, y, z);
+                    }
+                }
+            }
+        }
+    }
+
+    /** The Y of the highest block of the column (x, z) that is not air: its top, or the water over it (the sea's too). */
+    private static int surfaceAt(WorldData data, int x, int z) {
+        int top = data.heightAt(x, z);
+        return Math.max(top + data.waterAt(x, z), Math.max(top, SEA_LEVEL));
     }
 
     /**
@@ -405,36 +484,6 @@ public final class RealisticGenerator extends ChunkGenerator {
         return Math.min(w, d) + "x" + Math.max(w, d) + "x" + Math.round(box.getHeight());
     }
 
-    /** Debug: log the volumes of the pieces of each village. */
-    private static final boolean DEBUG_VILLAGE_LOG = true;
-    /** Debug: the villages already logged, so that each is told once and not for every chunk. */
-    private final Set<String> loggedVillages = ConcurrentHashMap.newKeySet();
-
-    /**
-     * Debug: the pieces of a village grouped by volume (the same whatever the rotation), with how many there are and where
-     * one of them is, to tell the models apart in the game.
-     */
-    private void logVillage(String name, GeneratedStructure structure) {
-        BoundingBox whole = structure.getBoundingBox();
-        // Without the Y: the height of the box of a village changes while its pieces are placed.
-        if (!loggedVillages.add(name + (int) whole.getMinX() + "," + (int) whole.getMinZ() + ","
-                + (int) whole.getMaxX() + "," + (int) whole.getMaxZ())) {
-            return;
-        }
-        Map<Integer, List<BoundingBox>> byVolume = new TreeMap<>();
-        for (StructurePiece piece : structure.getPieces()) {
-            BoundingBox b = piece.getBoundingBox();
-            byVolume.computeIfAbsent((int) Math.round(b.getVolume()),k -> new ArrayList<>()).add(b);
-        }
-        plugin.getLogger().info("Village " + name + " " + structure.getBoundingBox() + ": " + structure.getPieces().size()
-                + " pieces, " + byVolume.size() + " volumes");
-        for (Map.Entry<Integer, List<BoundingBox>> entry : byVolume.entrySet()) {
-            BoundingBox b = entry.getValue().get(0);
-            plugin.getLogger().info("  volume " + entry.getKey() + " x" + entry.getValue().size() + "  e.g. x " + (int) b.getMinX()
-                    + " y " + (int) b.getMinY() + " z " + (int) b.getMinZ());
-        }
-    }
-
     /** Biome at (x, y, z), from the layers of {@code world.bin}. */
     Biome biomeAt(int x, int y, int z) {
         Biome biome = data().biomeAt(x, y, z);
@@ -453,9 +502,11 @@ public final class RealisticGenerator extends ChunkGenerator {
      */
     @Override
     public int getBaseHeight(WorldInfo worldInfo, Random random, int x, int z, HeightMap heightMap) {
+        // The lakes and the rivers are already dug into the heights and their water is in its own layer (Carver): the bed
+        // is the seabed, the water over it counts for the other maps, as the sea does.
         int top = data().heightAt(x, z);
         boolean seabed = heightMap == HeightMap.OCEAN_FLOOR || heightMap == HeightMap.OCEAN_FLOOR_WG;
-        return (seabed ? top : Math.max(top, SEA_LEVEL)) + 1;
+        return (seabed ? top : Math.max(top + data().waterAt(x, z), SEA_LEVEL)) + 1;
     }
 
     @Override
@@ -474,12 +525,12 @@ public final class RealisticGenerator extends ChunkGenerator {
     }
 
     /**
-     * The vanilla caves and ravines have just been carved in {@code chunkData}: under the seas, only what is below the
-     * lowest point of the sea floor minus {@link #CARVER_SEA_MARGIN} is kept. Above it, in a column covered by water,
-     * every carved block (air, water or lava where there was stone) is stone again, and the water above the sea floor
-     * is whole again, so the sea floor is not broken into, and the water the carvers left above the sea level is
-     * removed. On the land the caves are as the carvers made them (the water of the underground lakes stays), except under
-     * a village: over its whole box, nothing is carved in the {@link #VILLAGE_CAVE_MARGIN} blocks under its ground.
+     * The carvers of the game have made their caves (the caverns are already there, from {@link #generateNoise}): what
+     * they did to the villages, the lakes, the rivers and the sea is undone. Under the villages, the ground is given back
+     * ({@link #protectVillages}). A lake or a river is kept whole, as the sea: stone under its bed (no cave opens under
+     * it, the water would drain into it), water up to its surface, and none above (the aquifers of the carvers can leave
+     * some there). Under the sea, the caves only start {@link #CARVER_SEA_MARGIN} blocks under the lowest point of the
+     * map, and the water stops at the sea level.
      */
     @Override
     public void generateCaves(WorldInfo worldInfo, Random random, int chunkX, int chunkZ, ChunkData chunkData) {
@@ -490,15 +541,33 @@ public final class RealisticGenerator extends ChunkGenerator {
         if (!villages.isEmpty()) {
             protectVillages(chunkData, chunkX, chunkZ, villages, flats(worldInfo, data, chunkX, chunkZ), data);
         }
+        Map<String, List<BoundingBox>> underground = pieces(worldInfo, chunkX, chunkZ);
         for (int localX = 0; localX < 16; localX++) {
             for (int localZ = 0; localZ < 16; localZ++) {
-                int top = data.heightAt(chunkX * 16 + localX, chunkZ * 16 + localZ);
+                int x = chunkX * 16 + localX;
+                int z = chunkZ * 16 + localZ;
+                int top = data.heightAt(x, z);
+                int water = data.waterAt(x, z);
+                if (water > 0) {
+                    // A lake or a river (down at the sea, its water joins the sea's).
+                    int surface = Math.max(top + water, top < SEA_LEVEL ? SEA_LEVEL : top);
+                    for (int y = limit + 1; y <= surface; y++) {
+                        if (carved(chunkData.getType(localX, y, localZ))) {
+                            chunkData.setBlock(localX, y, localZ, y <= top ? Material.STONE : Material.WATER);
+                        }
+                    }
+                    for (int y = surface + 1; y < maxY; y++) {
+                        if (chunkData.getType(localX, y, localZ) == Material.WATER) {
+                            chunkData.setBlock(localX, y, localZ, Material.AIR);
+                        }
+                    }
+                    continue;
+                }
                 if (top >= SEA_LEVEL) {
                     continue; // land
                 }
                 for (int y = limit + 1; y <= top; y++) {
-                    Material material = chunkData.getType(localX, y, localZ);
-                    if (material.isAir() || material == Material.WATER || material == Material.LAVA) {
+                    if (carved(chunkData.getType(localX, y, localZ))) {
                         chunkData.setBlock(localX, y, localZ, Material.STONE);
                     }
                 }
@@ -511,6 +580,139 @@ public final class RealisticGenerator extends ChunkGenerator {
                 for (int y = SEA_LEVEL + 1; y < maxY; y++) {
                     if (chunkData.getType(localX, y, localZ) == Material.WATER) {
                         chunkData.setBlock(localX, y, localZ, Material.AIR);
+                    }
+                }
+            }
+        }
+        List<BoundingBox> encased = new ArrayList<>();
+        List<BoundingBox> cleared = new ArrayList<>();
+        underground.forEach((name, boxes) -> (CLEARED.contains(name) ? cleared : encased).addAll(boxes));
+        if (!encased.isEmpty()) {
+            encase(chunkData, chunkX, chunkZ, encased, data);
+        }
+        if (!cleared.isEmpty()) {
+            clearAround(chunkData, chunkX, chunkZ, cleared);
+        }
+    }
+
+    /**
+     * The boxes of the pieces of the structures of {@link #CLEARED} and {@link #ENCASED} that reach the chunk, by the
+     * name of the structure, asked to the game (the chunk and the ones around, so that the margins reach over their
+     * border). Empty if the game does not answer.
+     */
+    private Map<String, List<BoundingBox>> pieces(WorldInfo worldInfo, int chunkX, int chunkZ) {
+        if (lookupFailed || !(worldInfo instanceof World world)) {
+            return Map.of();
+        }
+        try {
+            var registry = RegistryAccess.registryAccess().getRegistry(RegistryKey.STRUCTURE);
+            Map<String, GeneratedStructure> found = new LinkedHashMap<>();
+            Map<String, String> names = new HashMap<>();
+            for (int dx = -1; dx <= 1; dx++) {
+                for (int dz = -1; dz <= 1; dz++) {
+                    for (GeneratedStructure structure : world.getStructures(chunkX + dx, chunkZ + dz)) {
+                        NamespacedKey key = registry.getKey(structure.getStructure());
+                        if (key != null && (CLEARED.contains(key.getKey()) || ENCASED.contains(key.getKey()))) {
+                            String id = key.getKey() + structure.getBoundingBox();
+                            if (found.putIfAbsent(id, structure) == null) {
+                                names.put(id, key.getKey());
+                            }
+                        }
+                    }
+                }
+            }
+            Map<String, List<BoundingBox>> boxes = new HashMap<>();
+            for (Map.Entry<String, GeneratedStructure> entry : found.entrySet()) {
+                List<BoundingBox> list = boxes.computeIfAbsent(names.get(entry.getKey()), name -> new ArrayList<>());
+                for (StructurePiece piece : entry.getValue().getPieces()) {
+                    list.add(piece.getBoundingBox());
+                }
+            }
+            return boxes;
+        } catch (RuntimeException | LinkageError e) {
+            return Map.of(); // the failure is warned about by flats()
+        }
+    }
+
+    /**
+     * Wraps these pieces (trial chambers, a stronghold) in rock as the game would have: what the caverns and the caves
+     * dug in their box and within {@link #ENCASE_MARGIN} blocks of it (rounded at the edges) is filled, never above the
+     * ground of the column (a stronghold can come up close to a sea or a lake, whose water stays). The pieces are placed
+     * later and put their own rooms and corridors there.
+     */
+    private static void encase(ChunkData chunkData, int chunkX, int chunkZ, List<BoundingBox> pieces, WorldData data) {
+        int minHeight = chunkData.getMinHeight();
+        int maxY = chunkData.getMaxHeight();
+        int x0 = chunkX * 16;
+        int z0 = chunkZ * 16;
+        for (BoundingBox box : pieces) {
+            int minX = (int) Math.floor(box.getMinX());
+            int maxX = (int) Math.ceil(box.getMaxX()) - 1;
+            int minZ = (int) Math.floor(box.getMinZ());
+            int maxZ = (int) Math.ceil(box.getMaxZ()) - 1;
+            int bottom = (int) Math.floor(box.getMinY());
+            int top = (int) Math.ceil(box.getMaxY()) - 1;
+            for (int x = Math.max(minX - ENCASE_MARGIN, x0); x <= Math.min(maxX + ENCASE_MARGIN, x0 + 15); x++) {
+                int dx = Math.max(Math.max(minX - x, x - maxX), 0);
+                for (int z = Math.max(minZ - ENCASE_MARGIN, z0); z <= Math.min(maxZ + ENCASE_MARGIN, z0 + 15); z++) {
+                    int dz = Math.max(Math.max(minZ - z, z - maxZ), 0);
+                    int from = Math.max(bottom - ENCASE_MARGIN, minHeight + 1);
+                    int to = Math.min(Math.min(top + ENCASE_MARGIN, maxY - 1), data.heightAt(x, z));
+                    for (int y = from; y <= to; y++) {
+                        int dy = Math.max(Math.max(bottom - y, y - top), 0);
+                        if (dx * dx + dy * dy + dz * dz <= ENCASE_MARGIN * ENCASE_MARGIN
+                                && carved(chunkData.getType(x - x0, y, z - z0))) {
+                            chunkData.setBlock(x - x0, y, z - z0, y < 0 ? Material.DEEPSLATE : Material.STONE);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /**
+     * Digs the void the game would have dug around these pieces (an ancient city): first the ground under each is made
+     * solid over {@link #CLEAR_FLOOR} blocks, then everything within {@link #CLEAR_MARGIN} blocks of a piece, from its
+     * bottom up, is air (rounded at the edges). The pieces are placed later and fill their box as they are.
+     */
+    private static void clearAround(ChunkData chunkData, int chunkX, int chunkZ, List<BoundingBox> pieces) {
+        int minHeight = chunkData.getMinHeight();
+        int maxY = chunkData.getMaxHeight();
+        int x0 = chunkX * 16;
+        int z0 = chunkZ * 16;
+        for (BoundingBox box : pieces) {
+            int minX = (int) Math.floor(box.getMinX()) - CLEAR_MARGIN;
+            int maxX = (int) Math.ceil(box.getMaxX()) - 1 + CLEAR_MARGIN;
+            int minZ = (int) Math.floor(box.getMinZ()) - CLEAR_MARGIN;
+            int maxZ = (int) Math.ceil(box.getMaxZ()) - 1 + CLEAR_MARGIN;
+            int bottom = (int) Math.floor(box.getMinY());
+            for (int x = Math.max(minX, x0); x <= Math.min(maxX, x0 + 15); x++) {
+                for (int z = Math.max(minZ, z0); z <= Math.min(maxZ, z0 + 15); z++) {
+                    for (int y = Math.max(minHeight + 1, bottom - CLEAR_FLOOR); y < Math.min(bottom, maxY); y++) {
+                        if (carved(chunkData.getType(x - x0, y, z - z0))) {
+                            chunkData.setBlock(x - x0, y, z - z0, y < 0 ? Material.DEEPSLATE : Material.STONE);
+                        }
+                    }
+                }
+            }
+        }
+        for (BoundingBox box : pieces) {
+            int minX = (int) Math.floor(box.getMinX());
+            int maxX = (int) Math.ceil(box.getMaxX()) - 1;
+            int minZ = (int) Math.floor(box.getMinZ());
+            int maxZ = (int) Math.ceil(box.getMaxZ()) - 1;
+            int bottom = (int) Math.floor(box.getMinY());
+            int top = (int) Math.ceil(box.getMaxY()) - 1;
+            for (int x = Math.max(minX - CLEAR_MARGIN, x0); x <= Math.min(maxX + CLEAR_MARGIN, x0 + 15); x++) {
+                int dx = Math.max(Math.max(minX - x, x - maxX), 0);
+                for (int z = Math.max(minZ - CLEAR_MARGIN, z0); z <= Math.min(maxZ + CLEAR_MARGIN, z0 + 15); z++) {
+                    int dz = Math.max(Math.max(minZ - z, z - maxZ), 0);
+                    for (int y = Math.max(bottom, minHeight + 1); y <= Math.min(top + CLEAR_MARGIN, maxY - 1); y++) {
+                        int dy = Math.max(y - top, 0);
+                        if (dx * dx + dy * dy + dz * dz <= CLEAR_MARGIN * CLEAR_MARGIN
+                                && !chunkData.getType(x - x0, y, z - z0).isAir()) {
+                            chunkData.setBlock(x - x0, y, z - z0, Material.AIR);
+                        }
                     }
                 }
             }
@@ -610,10 +812,13 @@ public final class RealisticGenerator extends ChunkGenerator {
         return true;
     }
 
-    /** The ruined portals of the game come out buried (README): ours are placed on the ground instead. */
+    /**
+     * The water of the lakes and the rivers is let flow ({@link WaterFlow}). The ruined portals of the game come out
+     * buried (README): ours are placed on the ground instead.
+     */
     @Override
     public List<BlockPopulator> getDefaultPopulators(World world) {
-        return List.of(plugin.ruinedPortals());
+        return List.of(new WaterFlow(), plugin.ruinedPortals());
     }
 
     @Override

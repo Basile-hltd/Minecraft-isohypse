@@ -1,0 +1,7 @@
+# Réglages de LOD Server Support (plugins/LodServerSupport/lss-server-config.yaml) appliqués par local_run.py à chaque
+# démarrage : seules les clés listées ici sont changées, le reste du fichier (et ses commentaires) est gardé.
+# Le fichier d'LSS est créé par le plugin au premier lancement : les réglages s'appliquent à partir du suivant.
+storage:
+  disk:
+    reader_threads: 8        # 0 = auto (6 ici) ; plus de threads de lecture du disque
+    max_concurrent_reads: 8  # 0 = auto (3 ici) ; lectures disque en parallèle, plafonnées par reader_threads

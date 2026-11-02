@@ -1,8 +1,8 @@
 # Style Realistic : point du monde réel placé au centre du monde (x=0, z=0, le spawn).
-realistic:
-  latitude: 0.249550   # degrés, de -90 (sud) à 90 (nord)
-  longitude: 6.620393   # degrés, de -180 (ouest) à 180 (est)
-  size: 60000          # côté en mètres de la zone réelle récupérée ; la carte finale est mise à l'échelle (voir README)
+realistic: 
+  latitude: 46.160917   # degrés, de -90 (sud) à 90 (nord)
+  longitude: 6.923270   # degrés, de -180 (ouest) à 180 (est)
+  size: 50000          # côté en mètres de la zone réelle récupérée ; la carte finale est mise à l'échelle (voir README)
 
   # Mise à l'échelle des altitudes réelles en hauteurs de blocs (heightmap.bin) : un seul facteur, le point le plus haut au plafond. Les changer refait la height map et retélécharge les tuiles.
   scale:
@@ -20,12 +20,17 @@ realistic:
     normal_ocean_share: 0.5 # ...en ocean_normal ; le reste est ocean_cold (le large)
     warm_land_share: 0.35      # part des colonnes de terre en warm (les plus basses)...
     normal_land_share: 0.45    # ...en normal ; le reste est cold (les plus hautes)
+    lake_min_size: 50          # un plat (colonnes exactement à la même hauteur) d'au moins tant de blocs de large et de haut est un lac ; 0 : aucun
+    lake_smoothing: 20          # rayon (blocs) du filtre qui arrondit les angles des lacs (ne change que les bords) ; 0 : aucun
+    river_climb: 3             # une rivière part d'un lac et descend le relief ; elle passe un col jusqu'à tant de blocs au-dessus de son niveau (le creuseur le coupe), sinon elle s'arrête
+    river_width: 10             # largeur (blocs) d'une rivière à une source, elle grandit à chaque confluence ; 0 : aucune rivière
+    river_lake_snap: 20        # une rivière qui passe à tant de blocs ou moins d'un lac s'y connecte et s'arrête là ; 0 : aucun
 
 # Monde : hauteur maximale de l'overworld (le sol reste à y=-64). Arrondie à la valeur la plus proche acceptée par le jeu :
 # un multiple de 16 de 128 à 2032 ; 320 est la valeur de Minecraft (rien n'est changé). Ne s'applique qu'à un monde qui
 # n'existe pas encore : le plugin écrit un datapack au lancement du serveur.
 world:
-  max_height: 320
+  max_height: 600
 
 # Structures du monde Realistic dont le sol est aplati (igloos, avant-postes de pillards, camps abandonnés).
 structures:

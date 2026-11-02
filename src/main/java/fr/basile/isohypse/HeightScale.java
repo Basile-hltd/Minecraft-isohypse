@@ -221,7 +221,12 @@ final class HeightScale {
                 done += from.transferTo(heights.offset() + done, heights.bytes() - done, to);
             }
         }
-        Built built = appendLayers(part, directory, settings, seed, logger);
+        MappedFile.deleteStale(dir); // scratch files of an interrupted build
+        Built built;
+        // The heights are read from heightmap.bin, mapped: closed before world.bin is moved into place.
+        try (HeightMapData data = HeightMapData.fromWorld(heightmap)) {
+            built = appendLayers(part, directory, data, dir, settings, seed, logger);
+        }
 
         String text = Files.readString(settingsFile.toPath(), StandardCharsets.UTF_8);
         text = replaceBlock(text, "  \"temp\": \\{[^}]*\\}", settings.tempJson());
@@ -278,18 +283,23 @@ final class HeightScale {
      * which holds the header and the layer {@code height} (nothing else yet). Each is a byte per cell: the zone of
      * {@link TempLayout}, or the index of the biome of {@link BiomeLayout} (0 for none) in the palette.
      */
-    private static Built appendLayers(File file, WorldFile.Directory directory, TerrainSettings settings, long seed,
-                                      Logger logger) throws IOException {
+    private static Built appendLayers(File file, WorldFile.Directory directory, HeightMapData data, File dir,
+                                      TerrainSettings settings, long seed, Logger logger) throws IOException {
         WorldFile.Layer first = directory.layer(WorldFile.TEMP);
         if (Files.size(file.toPath()) != first.offset()) {
             throw new IOException("world.bin: the layer temp does not follow the heights: " + file);
         }
         long started = System.nanoTime();
-        HeightMapData data = HeightMapData.fromWorld(file);
-        long read = millis(started);
-        started = System.nanoTime();
-        TempLayout temp = TempLayout.build(data, SEA_LEVEL, settings);
-        long built = millis(started);
+        long read = 0; // the heights are mapped, not read
+        try (TempLayout temp = TempLayout.build(data, SEA_LEVEL, settings, dir, logger)) {
+            return writeLayers(file, directory, data, temp, seed, logger, read, millis(started));
+        }
+    }
+
+    private static Built writeLayers(File file, WorldFile.Directory directory, HeightMapData data, TempLayout temp, long seed,
+                                     Logger logger, long read, long built) throws IOException {
+        WorldFile.Layer first = directory.layer(WorldFile.TEMP);
+        long started;
         List<TempLayout.Zone> zones = temp.all();
         BiomeLayout biomes = new BiomeLayout(SEA_LEVEL, seed, temp);
         List<String> palette = palette();
@@ -300,30 +310,117 @@ final class HeightScale {
         try (DataOutputStream stream = new DataOutputStream(
                 new BufferedOutputStream(new FileOutputStream(file, true), 1 << 16))) {
             started = System.nanoTime();
-            writeLayer(stream, first, data, (x, z, top) -> zones.indexOf(temp.at(x, z, top)));
+            writeLayer(stream, first, data, (x, z, top) -> zones.indexOf(temp.at(x, z, top)), logger, "couche des zones");
             long zonesMs = millis(started);
             started = System.nanoTime();
-            writeLayer(stream, directory.layer(WorldFile.BIOME), data, (x, z, top) -> index(indexes, biomes.at(x, z, top)));
+            writeLayer(stream, directory.layer(WorldFile.BIOME), data, (x, z, top) -> index(indexes,
+                    hasRiver(temp, x, z) ? biomes.riverAt(x, z, top) : biomes.at(x, z, top)), logger, "biomes de surface");
             long surfaceMs = millis(started);
             started = System.nanoTime();
             writeLayer(stream, directory.layer(WorldFile.CAVE_BIOME), data,
-                    (x, z, top) -> index(indexes, biomes.caveAt(x, CAVE_Y, z, UNDERGROUND_TOP)));
+                    (x, z, top) -> index(indexes, biomes.caveAt(x, CAVE_Y, z, UNDERGROUND_TOP)),
+                    logger, "grottes");
             long cavesMs = millis(started);
             started = System.nanoTime();
             writeLayer(stream, directory.layer(WorldFile.DEEP_CAVE_BIOME), data,
-                    (x, z, top) -> index(indexes, biomes.caveAt(x, DEEP_CAVE_Y, z, UNDERGROUND_TOP)));
+                    (x, z, top) -> index(indexes, biomes.caveAt(x, DEEP_CAVE_Y, z, UNDERGROUND_TOP)),
+                    logger, "grottes profondes");
             long deepMs = millis(started);
             logger.info("zones de la carte intermédiaire et biomes calculés (" + zones.size() + " zones, " + (palette.size() - 1)
                     + " biomes possibles) : lecture des hauteurs " + read + " ms, filtres de TempLayout " + built
                     + " ms, couche des zones " + zonesMs + " ms, biomes de surface " + surfaceMs + " ms, grottes " + cavesMs
                     + " ms, grottes profondes " + deepMs + " ms");
         }
+        carveHeights(file, directory, data, temp, seed, logger);
         return new Built(zones, palette);
     }
 
+    /**
+     * Whether the biome cell whose first block is (x, z) (it covers {@link WorldFile#BIOME_STEP} x {@code BIOME_STEP}
+     * blocks from there) has a column of the zone river: the cell is then a river, so that a narrow river is a river all
+     * along and not only where it crosses the one column the cell is read from. A lake column is not a river, even where
+     * a river goes into the lake.
+     */
+    private static boolean hasRiver(TempLayout temp, int x, int z) {
+        for (int dx = 0; dx < WorldFile.BIOME_STEP; dx++) {
+            for (int dz = 0; dz < WorldFile.BIOME_STEP; dz++) {
+                if (temp.rivers().contains(x + dx, z + dz) && !temp.lakes().contains(x + dx, z + dz)) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    /** The relief the {@link Carver} reads while {@code world.bin} is built: the raw heights and the masks of the zones. */
+    private record BuildRelief(HeightMapData data, LakeMask lakes, RiverMask rivers) implements Relief {
+
+        @Override
+        public int heightAt(int x, int z) {
+            return data.heightAt(x, z);
+        }
+
+        @Override
+        public boolean lakeAt(int x, int z) {
+            return lakes.contains(x, z);
+        }
+
+        @Override
+        public boolean riverAt(int x, int z) {
+            return rivers.contains(x, z);
+        }
+    }
+
+    /**
+     * Digs the lakes and the rivers into the layer {@code height} of {@code file} and fills the layer {@code water}, which
+     * comes last and is appended here: each column gets its carved solid top ({@link Carver}), read from the raw heights
+     * and the masks, written back as a big-endian 16-bit value, and the blocks of water over it. Done tile by tile so the
+     * carving of each only reads a bounded margin around it; the raw heights ({@code data}) are never changed, so no
+     * carved column feeds the carving of another.
+     */
+    private static void carveHeights(File file, WorldFile.Directory directory, HeightMapData data, TempLayout temp,
+                                     long seed, Logger logger) throws IOException {
+        long started = System.nanoTime();
+        WorldFile.Layer layer = directory.layer(WorldFile.HEIGHT);
+        WorldFile.Layer waterLayer = directory.layer(WorldFile.WATER);
+        if (Files.size(file.toPath()) != waterLayer.offset()) {
+            throw new IOException("world.bin: the layer water does not follow the biomes: " + file);
+        }
+        try (RandomAccessFile raf = new RandomAccessFile(file, "rw")) {
+            raf.setLength(waterLayer.offset() + waterLayer.bytes()); // zeros: no water, until the carving fills it
+        }
+        int width = directory.width();
+        int height = directory.height();
+        int tile = 64;
+        Relief relief = new BuildRelief(data, temp.lakes(), temp.rivers());
+        try (MappedFile map = MappedFile.writable(file, layer.offset(), layer.bytes());
+             MappedFile waterMap = MappedFile.writable(file, waterLayer.offset(), waterLayer.bytes())) {
+            MemorySegment segment = map.segment();
+            MemorySegment waterSegment = waterMap.segment();
+            for (int row0 = 0; row0 < height; row0 += tile) {
+                int rows = Math.min(tile, height - row0);
+                for (int col0 = 0; col0 < width; col0 += tile) {
+                    int cols = Math.min(tile, width - col0);
+                    Carver.Carved carved = Carver.carveTile(relief, seed, col0 - width / 2, row0 - height / 2, cols, rows);
+                    for (int i = 0; i < cols; i++) {
+                        for (int j = 0; j < rows; j++) {
+                            int value = carved.tops()[i * rows + j];
+                            long cell = (long) (row0 + j) * width + col0 + i;
+                            segment.set(MappedFile.BYTE, 2 * cell, (byte) (value >> 8));
+                            segment.set(MappedFile.BYTE, 2 * cell + 1, (byte) value);
+                            waterSegment.set(MappedFile.BYTE, cell, (byte) carved.water()[i * rows + j]);
+                        }
+                    }
+                }
+            }
+        }
+        logger.info("lacs et rivières creusés et remplis dans world.bin : " + millis(started) + " ms");
+    }
+
     /** Writes a layer of one byte per cell, band by band. */
-    private static void writeLayer(DataOutputStream stream, WorldFile.Layer layer, HeightMapData data, Value value)
-            throws IOException {
+    private static void writeLayer(DataOutputStream stream, WorldFile.Layer layer, HeightMapData data, Value value,
+                                   Logger logger, String label) throws IOException {
+        Progress progress = new Progress(logger, label, layer.rows());
         int width = data.width();
         int height = data.height();
         int step = layer.step();
@@ -340,6 +437,7 @@ final class HeightScale {
                 }
             });
             stream.write(band);
+            progress.advance(rows);
         }
     }
 

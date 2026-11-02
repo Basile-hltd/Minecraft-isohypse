@@ -19,6 +19,7 @@ The colours are the viewer's own: the plugin only gives names.
 
 Usage :
     pip install -r tools/requirements.txt
+    # tkinter is not a pip package: install it with your OS (Debian/Ubuntu: sudo apt install python3-tk)
     python tools/map_viewer.py [folder] [--server-jar PATH]        (default folder : tmp/server/plugins/Isohypse)
 
 Mouse : wheel = zoom, drag = move, double click = copy a /tp command to the clipboard.
@@ -59,6 +60,8 @@ SEA_DARK = np.array([10, 40, 120], dtype=np.float32)      # deep sea
 ZONE_COLORS = {
     "ocean_cold": 0x14347A, "ocean_normal": 0x1F4FA3, "ocean_warm": 0x3FC0D0,
     "beach": 0xF0E0A0, "warm": 0xE8A23C, "normal": 0x6AA84F, "cold": 0xDDE6EE,
+    "lake": 0xE020E0,   # magenta, to be seen over the sea and the land while the lakes are checked
+    "river": 0xFF8000,  # orange, same reason
 }
 
 # The colours of the biomes, by name (those of the former maps).
@@ -68,6 +71,7 @@ BIOME_COLORS = {
     "deep_cold_ocean": 0x1D4A7A, "deep_dark": 0x0A2830, "deep_frozen_ocean": 0x6A92C0,
     "deep_lukewarm_ocean": 0x236B99, "deep_ocean": 0x14347A, "desert": 0xFA9418, "dripstone_caves": 0x8B5A2B,
     "flower_forest": 0x2D8E49, "forest": 0x056621, "frozen_ocean": 0x8FB8E0, "frozen_peaks": 0xFFFFFF,
+    "frozen_river": 0xA0A0FF,
     "grove": 0xC3D6CC, "ice_spikes": 0xB4DCDC, "jagged_peaks": 0xEEF2F6, "jungle": 0x537B09,
     "lukewarm_ocean": 0x2F8FC4, "lush_caves": 0x9ED82A, "mangrove_swamp": 0x67352B, "meadow": 0x83BB6D,
     "ocean": 0x1F4FA3, "old_growth_birch_forest": 0x589C6C, "old_growth_pine_taiga": 0x596651,
@@ -247,8 +251,12 @@ class Viewer:
         self.ox = 0.0   # map column at the left edge of the canvas
         self.oy = 0.0   # map row at the top edge
         self.photo = None
+        self.image_id = None
         self.drag = None
         self.fitted = False
+        self.master = None          # the whole map rendered once, in RAM (a PIL image); the view crops and scales it
+        self._pending = None        # the scheduled redraw, so a burst of drag or zoom events makes at most one redraw
+        self._master_dirty = False  # a display setting changed: the master must be rebuilt before the next draw
 
         panel = ttk.Frame(root, padding=4)
         panel.pack(side="left", fill="y")
@@ -376,6 +384,7 @@ class Viewer:
         self.structures_state = "idle"
         self.structure_names, self.points = [], np.zeros(0, dtype=POINT)
         self.fill_structure_list()
+        self.redraw()   # (re)build the master image of the new world, then draw
 
     def current_layer(self):
         """The name in world.bin of the layer of biomes chosen, None if there is none."""
@@ -412,7 +421,7 @@ class Viewer:
     def on_structures_toggle(self):
         if self.show_structures.get() and self.structures_state == "idle":
             self.compute_structures()
-        self.redraw()
+        self.draw_async()
 
     def compute_structures(self):
         """Works out the structures in a thread (a few seconds), from the layers of the world and the data of the server."""
@@ -488,7 +497,7 @@ class Viewer:
         self.structures_state = "done"
         self.fill_structure_list()
         self.status.set(f"{len(found)} structures attendues")
-        self.redraw()
+        self.draw_async()
 
     def fill_structure_list(self):
         """The list of the structures, the most numerous first, with how many there are."""
@@ -503,13 +512,13 @@ class Viewer:
             line.pack(anchor="w", fill="x")
             tk.Label(line, bg=hex_of(color_of(family(name))), width=2).pack(side="left", padx=(0, 4))
             ttk.Checkbutton(line, text=f"{name}  ({counts[i]})", variable=self.structure_vars[name],
-                            command=self.redraw).pack(side="left")
+                            command=self.draw_async).pack(side="left")
         self.shown_structures = [self.structure_names[i] for i in rows]
 
     def set_all_structures(self, value):
         for name in self.shown_structures:
             self.structure_vars[name].set(value)
-        self.redraw()
+        self.draw_async()
 
     def visible_points(self):
         """The points of the structures that are shown."""
@@ -557,7 +566,7 @@ class Viewer:
         if not self.fitted:
             self.fitted = True
             self.fit()
-        self.redraw()
+        self.draw_async()
 
     def zoom(self, sx, sy, factor):
         new = min(MAX_SCALE, self.scale * factor)
@@ -567,7 +576,7 @@ class Viewer:
         mx, my = self.ox + sx / self.scale, self.oy + sy / self.scale
         self.scale = new
         self.ox, self.oy = mx - sx / new, my - sy / new
-        self.redraw()
+        self.draw_async()
 
     def on_press(self, event):
         self.drag = (event.x, event.y, self.ox, self.oy)
@@ -577,7 +586,7 @@ class Viewer:
             x, y, ox, oy = self.drag
             self.ox = ox - (event.x - x) / self.scale
             self.oy = oy - (event.y - y) / self.scale
-            self.redraw()
+            self.draw_async()
 
     def column_at(self, sx, sy):
         """(column, row) of the map under the canvas point, None outside the map."""
@@ -632,18 +641,13 @@ class Viewer:
         alpha = opacity / 100
         return np.where(shown[ids][..., None], (1 - alpha) * rgb + alpha * lut[ids], rgb)
 
-    def redraw(self):
-        cw, ch = self.canvas.winfo_width(), self.canvas.winfo_height()
-        self.canvas.delete("all")
-        ix0, iy0 = max(0, int(self.ox)), max(0, int(self.oy))
-        ix1 = min(self.width, int(self.ox + cw / self.scale) + 2)
-        iy1 = min(self.height, int(self.oy + ch / self.scale) + 2)
-        if ix1 <= ix0 or iy1 <= iy0:
-            return
-        step = max(1, int(1 / self.scale))  # zoomed out: one block out of `step`
+    def render_master(self):
+        """Render the whole map once, in RAM, from world.bin and the current display settings. The view then only crops
+        and scales this image (draw), so panning and zooming never read the disk nor recolour anything. Kept on failure
+        (e.g. the server is writing a new world): the old master stays and a message is shown."""
         try:
-            sub = self.layers["height"].region(self.path, iy0, iy1, ix0, ix1, step).astype(np.float32)
-        except (OSError, ValueError) as e:  # e.g. the server is writing a new world
+            sub = self.layers["height"].region(self.path, 0, self.height, 0, self.width, 1).astype(np.float32)
+        except (OSError, ValueError) as e:
             self.status.set(f"carte illisible pour le moment ({e}), essayer Recharger")
             return
 
@@ -660,22 +664,40 @@ class Viewer:
 
         try:
             if self.show_zones.get() and self.zones:
-                ids = self.layers["temp"].region(self.path, iy0, iy1, ix0, ix1, step)
+                ids = self.layers["temp"].region(self.path, 0, self.height, 0, self.width, 1)
                 if ids.shape == sub.shape:
                     rgb = self.overlay(rgb, ids, self.zone_lut, [v.get() for v in self.zone_vars], self.zone_opacity.get())
             layer = self.current_layer()
             if self.show_biomes.get() and layer:
-                ids = self.layers[layer].region(self.path, iy0, iy1, ix0, ix1, step)
+                ids = self.layers[layer].region(self.path, 0, self.height, 0, self.width, 1)
                 if ids.shape == sub.shape:
                     rgb = self.overlay(rgb, ids, self.biome_lut, [self.biome_vars[n].get() for n in self.biome_names],
                                        self.biome_opacity.get())
         except (OSError, ValueError):
             pass  # a layer that cannot be read for now: the map without it
 
-        image = Image.fromarray(rgb.astype(np.uint8))
-        size = (max(1, round(sub.shape[1] * step * self.scale)), max(1, round(sub.shape[0] * step * self.scale)))
-        self.photo = ImageTk.PhotoImage(image.resize(size, Image.NEAREST))
-        self.canvas.create_image((ix0 - self.ox) * self.scale, (iy0 - self.oy) * self.scale, image=self.photo, anchor="nw")
+        self.master = Image.fromarray(rgb.astype(np.uint8))
+
+    def draw(self):
+        """Show the visible part of the master, scaled to the canvas, then the structures over it. Cheap: one scale of
+        the RAM image (its visible box, straight to canvas size) into a single picture, no disk and no recolouring."""
+        self.canvas.delete("all")
+        self.image_id = None
+        if self.master is None:
+            return
+        cw, ch = self.canvas.winfo_width(), self.canvas.winfo_height()
+        if cw <= 1 or ch <= 1:
+            return
+        vx0, vy0 = max(0.0, self.ox), max(0.0, self.oy)
+        vx1 = min(self.width, self.ox + cw / self.scale)
+        vy1 = min(self.height, self.oy + ch / self.scale)
+        if vx1 <= vx0 or vy1 <= vy0:
+            return  # the map is off the canvas
+        size = (max(1, round((vx1 - vx0) * self.scale)), max(1, round((vy1 - vy0) * self.scale)))
+        view = self.master.resize(size, Image.NEAREST, box=(vx0, vy0, vx1, vy1))
+        self.photo = ImageTk.PhotoImage(view)
+        self.image_id = self.canvas.create_image(round((vx0 - self.ox) * self.scale), round((vy0 - self.oy) * self.scale),
+                                                  image=self.photo, anchor="nw")
 
         points = self.visible_points()
         if len(points):
@@ -685,6 +707,29 @@ class Viewer:
             for x, y, kind in zip(px[inside], py[inside], points["kind"][inside]):
                 self.canvas.create_oval(x - DOT_RADIUS, y - DOT_RADIUS, x + DOT_RADIUS, y + DOT_RADIUS,
                                         fill=hex_of(color_of(family(self.structure_names[kind]))), outline="black")
+
+    def request(self, rebuild=False):
+        """Schedule a draw for ~16 ms from now, so a burst of drag, zoom or slider events makes at most one draw.
+        `rebuild` also rebuilds the master image first (a display setting changed)."""
+        if rebuild:
+            self._master_dirty = True
+        if self._pending is None:
+            self._pending = self.root.after(16, self._flush)
+
+    def _flush(self):
+        self._pending = None
+        if self._master_dirty:
+            self._master_dirty = False
+            self.render_master()
+        self.draw()
+
+    def redraw(self):
+        """A display setting changed: rebuild the master, then draw (both coalesced to the next frame)."""
+        self.request(rebuild=True)
+
+    def draw_async(self, *_):
+        """The view (pan, zoom, resize) or the structures changed: draw again without rebuilding the master."""
+        self.request()
 
 
 def main():

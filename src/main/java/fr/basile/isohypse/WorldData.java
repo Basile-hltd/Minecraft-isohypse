@@ -34,22 +34,33 @@ final class WorldData {
     private final int width;
     private final int height;
     private final WorldFile.Layer heights;
+    private final WorldFile.Layer zones;
+    /** The index of the zone "lake" in the layer of the zones, -1 if the map has none. */
+    private final int lakeZone;
+    /** The index of the zone "river" in the layer of the zones, -1 if the map has none. */
+    private final int riverZone;
     private final WorldFile.Layer surface;
     private final WorldFile.Layer caves;
     private final WorldFile.Layer deepCaves;
+    private final WorldFile.Layer water;
     /** The biome of each index of the layers (the list of settings.json), null for "none" or a biome this version lacks. */
     private final Biome[] biomes;
     private final int lowest;
     private final int seaLevel;
 
-    private WorldData(MemorySegment file, WorldFile.Directory directory, Biome[] biomes, int lowest, int seaLevel) {
+    private WorldData(MemorySegment file, WorldFile.Directory directory, Biome[] biomes, int lowest, int seaLevel,
+                      int lakeZone, int riverZone) {
         this.file = file;
         this.width = directory.width();
         this.height = directory.height();
         this.heights = directory.layer(WorldFile.HEIGHT);
+        this.zones = directory.layer(WorldFile.TEMP);
+        this.lakeZone = lakeZone;
+        this.riverZone = riverZone;
         this.surface = directory.layer(WorldFile.BIOME);
         this.caves = directory.layer(WorldFile.CAVE_BIOME);
         this.deepCaves = directory.layer(WorldFile.DEEP_CAVE_BIOME);
+        this.water = directory.layer(WorldFile.WATER);
         this.biomes = biomes;
         this.lowest = lowest;
         this.seaLevel = seaLevel;
@@ -75,12 +86,28 @@ final class WorldData {
             throw new IOException("settings.json: no lowest_y");
         }
 
+        // The zones are listed in the order of their index in the layer: the lakes are the zone named "lake".
+        int lakeZone = -1;
+        int riverZone = -1;
+        Matcher zoneList = Pattern.compile("\"temp_zones\"\\s*:\\s*\\[(.*?)]", Pattern.DOTALL).matcher(settings);
+        if (zoneList.find()) {
+            Matcher zoneName = Pattern.compile("\"name\"\\s*:\\s*\"([^\"]+)\"").matcher(zoneList.group(1));
+            for (int index = 0; zoneName.find(); index++) {
+                if (zoneName.group(1).equals("lake")) {
+                    lakeZone = index;
+                } else if (zoneName.group(1).equals("river")) {
+                    riverZone = index;
+                }
+            }
+        }
+
         MemorySegment segment;
         try (RandomAccessFile raf = new RandomAccessFile(worldFile, "r"); FileChannel channel = raf.getChannel()) {
             // The mapping stays for the life of the server: the file is only replaced when the server starts.
             segment = channel.map(FileChannel.MapMode.READ_ONLY, 0, channel.size(), Arena.global());
         }
-        return new WorldData(segment, directory, found.toArray(new Biome[0]), Integer.parseInt(low.group(1)), seaLevel);
+        return new WorldData(segment, directory, found.toArray(new Biome[0]), Integer.parseInt(low.group(1)), seaLevel,
+                lakeZone, riverZone);
     }
 
     /** Y of the top block of the column (x, z). */
@@ -88,6 +115,33 @@ final class WorldData {
         long column = Math.floorMod(x + width / 2, width);
         long row = Math.floorMod(z + height / 2, height);
         return file.get(SHORT, heights.offset() + 2 * (row * width + column));
+    }
+
+    /** The blocks of water of a lake or a river over the top block of the column (x, z), 0 for none. */
+    int waterAt(int x, int z) {
+        long column = Math.floorMod(x + width / 2, width);
+        long row = Math.floorMod(z + height / 2, height);
+        return file.get(ValueLayout.JAVA_BYTE, water.offset() + row * width + column) & 0xFF;
+    }
+
+    /** Whether the column (x, z) is a lake (the zone "lake" of the intermediate map): a flat, whose height is the water level. */
+    boolean lakeAt(int x, int z) {
+        if (lakeZone < 0) {
+            return false;
+        }
+        long column = Math.floorMod(x + width / 2, width);
+        long row = Math.floorMod(z + height / 2, height);
+        return (file.get(ValueLayout.JAVA_BYTE, zones.offset() + row * zones.columns() + column) & 0xFF) == lakeZone;
+    }
+
+    /** Whether the column (x, z) is a river (the zone "river" of the intermediate map; a lake is over a river). */
+    boolean riverAt(int x, int z) {
+        if (riverZone < 0) {
+            return false;
+        }
+        long column = Math.floorMod(x + width / 2, width);
+        long row = Math.floorMod(z + height / 2, height);
+        return (file.get(ValueLayout.JAVA_BYTE, zones.offset() + row * zones.columns() + column) & 0xFF) == riverZone;
     }
 
     /** Y of the lowest column of the map. */

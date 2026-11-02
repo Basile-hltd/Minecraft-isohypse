@@ -22,11 +22,11 @@ enum LandType {
             b(Biome.WOODED_BADLANDS, 3), b(Biome.BAMBOO_JUNGLE, 3), b(Biome.WINDSWEPT_SAVANNA, 3),
             b(Biome.MANGROVE_SWAMP, 3), b(Biome.SUNFLOWER_PLAINS, 1), b(Biome.FLOWER_FOREST, 1))),
     /** The temperate biomes: the plains and the forests, and where they meet the mountains. dappled_forest only
-     * exists in recent versions. */
-    NORMAL(() -> biomes(b(Biome.FOREST, 21), b(Biome.PLAINS, 20), b(Biome.TAIGA, 10), b(Biome.BIRCH_FOREST, 9),
+     * exists in recent versions. No taiga: its temperature is low enough for the altitude to freeze it (it is in the cold type). */
+    NORMAL(() -> biomes(b(Biome.FOREST, 21), b(Biome.PLAINS, 20), b(Biome.BIRCH_FOREST, 9),
             b(Biome.DARK_FOREST, 8), b(BiomeLayout.biome("dappled_forest"), 8), b(Biome.SWAMP, 2), b(Biome.MEADOW, 4),
-            b(Biome.FLOWER_FOREST, 3), b(Biome.OLD_GROWTH_PINE_TAIGA, 3), b(Biome.SUNFLOWER_PLAINS, 2),
-            b(Biome.OLD_GROWTH_BIRCH_FOREST, 2), b(Biome.CHERRY_GROVE, 2), b(Biome.OLD_GROWTH_SPRUCE_TAIGA, 2),
+            b(Biome.FLOWER_FOREST, 3), b(Biome.SUNFLOWER_PLAINS, 2),
+            b(Biome.OLD_GROWTH_BIRCH_FOREST, 2), b(Biome.CHERRY_GROVE, 2),
             b(Biome.PALE_GARDEN, 1))),
     /** The snow and the mountains. */
     COLD(() -> biomes(b(Biome.SNOWY_PLAINS, 18), b(Biome.SNOWY_TAIGA, 12), b(Biome.WINDSWEPT_HILLS, 10),

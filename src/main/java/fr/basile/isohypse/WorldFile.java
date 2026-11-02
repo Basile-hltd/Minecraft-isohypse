@@ -27,8 +27,9 @@ import java.util.List;
  *
  * <p>The layers: {@code height} (the Y of the top block of every column), {@code temp} (the index of the zone of
  * {@link TempLayout} of every column) and {@code biome}, {@code cave_biome}, {@code deep_cave_biome} (the index of the
- * biome at the surface and in the caves at two depths, one cell per 4 x 4 blocks). The names of the zones and the list of
- * the biomes are in {@code settings.json}.
+ * biome at the surface and in the caves at two depths, one cell per 4 x 4 blocks) and {@code water} (the blocks of water of
+ * a lake or a river over the top block of every column, 0 for none). The names of the zones and the list of the biomes are
+ * in {@code settings.json}.
  */
 final class WorldFile {
 
@@ -43,6 +44,8 @@ final class WorldFile {
     static final String BIOME = "biome";
     static final String CAVE_BIOME = "cave_biome";
     static final String DEEP_CAVE_BIOME = "deep_cave_biome";
+    /** The blocks of water of a lake or a river over the top block of a column, 0 for none (see {@link Carver}). */
+    static final String WATER = "water";
     /** Blocks per cell of the biome layers: the game asks for a biome of a 4 x 4 x 4 cell. */
     static final int BIOME_STEP = 4;
 
@@ -101,7 +104,7 @@ final class WorldFile {
     static Directory planWorld(int width, int height) {
         return plan(width, height, List.of(new Spec(HEIGHT, INT16, 1), new Spec(TEMP, UINT8, 1),
                 new Spec(BIOME, UINT8, BIOME_STEP), new Spec(CAVE_BIOME, UINT8, BIOME_STEP),
-                new Spec(DEEP_CAVE_BIOME, UINT8, BIOME_STEP)));
+                new Spec(DEEP_CAVE_BIOME, UINT8, BIOME_STEP), new Spec(WATER, UINT8, 1)));
     }
 
     static void writeHeader(DataOutputStream out, Directory directory) throws IOException {

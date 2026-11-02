@@ -1,6 +1,9 @@
 package fr.basile.isohypse;
 
+import java.io.File;
+import java.io.IOException;
 import java.util.List;
+import java.util.logging.Logger;
 
 /**
  * The intermediate map: seven zones derived from the height map alone, with no link to the Minecraft biomes (yet).
@@ -19,26 +22,65 @@ import java.util.List;
  * </ul>
  * All of these are the {@link TerrainSettings}.
  */
-final class TempLayout {
+final class TempLayout implements AutoCloseable {
 
     /** A zone and the Y range it covers (written in settings.json). */
     record Zone(String name, String range) {}
 
     /** The layout of a height map with these settings. */
-    static TempLayout build(HeightMapData data, int seaLevel, TerrainSettings settings) {
+    static TempLayout build(HeightMapData data, int seaLevel, TerrainSettings settings, File dir, Logger logger)
+            throws IOException {
         int beachStart = settings.beachStart(seaLevel);
         int landStart = settings.landStart(seaLevel);
         // The sea zones: the distance of every sea column to the edge of the sea (what is not sea), filtered widely.
-        ShoreDistance shore = new ShoreDistance(data, v -> v >= beachStart, 0);
-        HeightSmoothing seaSmoothing = new HeightSmoothing(data, shore::quarterBlocks,
-                (column, row) -> data.valueAt(column, row) < beachStart, settings.oceanBlur());
-        ShoreDistance seaDistance = new ShoreDistance(data, v -> v < beachStart, settings.beachInlandDistance());
-        // The land, and the beach columns too far from the sea (they are warm land, decided before the filtering).
-        HeightSmoothing landSmoothing = new HeightSmoothing(data, data::valueAt, (column, row) -> {
-            int v = data.valueAt(column, row);
-            return v >= landStart || v >= beachStart && seaDistance.isFar(column - data.width() / 2, row - data.height() / 2);
-        }, settings.landBlur());
-        return new TempLayout(seaLevel, data.highest(), seaSmoothing, landSmoothing, seaDistance, settings);
+        HeightSmoothing seaSmoothing;
+        try (ShoreDistance shore = new ShoreDistance(data, v -> v >= beachStart, 0, dir, logger, "distance au bord de la mer")) {
+            seaSmoothing = new HeightSmoothing(data, shore::quarterBlocks,
+                    (column, row) -> data.valueAt(column, row) < beachStart, settings.oceanBlur(), dir, logger, "flou de la mer");
+        }
+        ShoreDistance seaDistance = null;
+        LakeMask lakes = null;
+        RiverMask rivers = null;
+        try {
+            seaDistance = new ShoreDistance(data, v -> v < beachStart, settings.beachInlandDistance(), dir, logger,
+                    "distance à la mer des plages");
+            ShoreDistance far = seaDistance;
+            // The land, and the beach columns too far from the sea (they are warm land, decided before the filtering).
+            HeightSmoothing landSmoothing = new HeightSmoothing(data, data::valueAt, (column, row) -> {
+                int v = data.valueAt(column, row);
+                return v >= landStart || v >= beachStart && far.isFar(column - data.width() / 2, row - data.height() / 2);
+            }, settings.landBlur(), dir, logger, "flou de la terre");
+            // The lakes come last: the flats of the height map, over the zones above, but never in what is already the sea
+            // of the map (up to the sea level).
+            lakes = new LakeMask(data, settings.lakeMinSize(), settings.lakeSmoothing(), seaLevel, dir, logger, "lacs");
+            // The rivers leave the lakes and follow the relief down, to a lower lake, the sea or another river.
+            rivers = new RiverMask(data, lakes, settings.riverClimb(), settings.riverWidth(), settings.riverLakeSnap(),
+                    seaLevel, dir, logger, "rivières");
+            return new TempLayout(seaLevel, data.highest(), seaSmoothing, landSmoothing, seaDistance, lakes, rivers,
+                    settings);
+        } catch (IOException | RuntimeException | Error e) {
+            seaSmoothing.close();
+            if (rivers != null) {
+                rivers.close();
+            }
+            if (lakes != null) {
+                lakes.close();
+            }
+            if (seaDistance != null) {
+                seaDistance.close();
+            }
+            throw e;
+        }
+    }
+
+    /** Frees the scratch files of the three maps. */
+    @Override
+    public void close() {
+        seaDistance.close();
+        seaSmoothing.close();
+        landSmoothing.close();
+        lakes.close();
+        rivers.close();
     }
 
     private final Zone deepSea;
@@ -48,10 +90,14 @@ final class TempLayout {
     private final Zone warm;
     private final Zone normal;
     private final Zone cold;
+    private final Zone lake;
+    private final Zone river;
 
     private final ShoreDistance seaDistance;
     private final HeightSmoothing seaSmoothing;
     private final HeightSmoothing landSmoothing;
+    private final LakeMask lakes;
+    private final RiverMask rivers;
     /** The limits between the sea zones, in quarters of a block from the shore. */
     private final int warmOceanLimit;
     private final int oceanLimit;
@@ -64,10 +110,14 @@ final class TempLayout {
      * @param seaSmoothing the filtered distance to the shore of the sea columns, in quarters of a block
      * @param landSmoothing the filtered land, which the land zones are told apart on
      * @param seaDistance which columns are far enough from the nearest sea, to turn the inland beach to warm land
+     * @param lakes the flats of the height map, which are lakes whatever the zone under them
+     * @param rivers the courses from the lakes down to a lower lake or the sea, over the land zones (a lake is over them)
      */
     TempLayout(int seaLevel, int highest, HeightSmoothing seaSmoothing, HeightSmoothing landSmoothing,
-               ShoreDistance seaDistance, TerrainSettings settings) {
+               ShoreDistance seaDistance, LakeMask lakes, RiverMask rivers, TerrainSettings settings) {
         this.seaDistance = seaDistance;
+        this.lakes = lakes;
+        this.rivers = rivers;
         this.seaSmoothing = seaSmoothing;
         this.landSmoothing = landSmoothing;
         this.beachStart = settings.beachStart(seaLevel);
@@ -87,6 +137,8 @@ final class TempLayout {
         this.warm = new Zone("warm", landStart + " à " + warmTop);
         this.normal = new Zone("normal", warmTop + " à " + normalTop);
         this.cold = new Zone("cold", normalTop + " à " + highest);
+        this.lake = new Zone("lake", "plat d'au moins " + settings.lakeMinSize() + " x " + settings.lakeMinSize() + " blocs");
+        this.river = new Zone("river", "descend d'un lac, remonte au plus de " + settings.riverClimb() + " blocs");
     }
 
     /**
@@ -123,6 +175,12 @@ final class TempLayout {
 
     /** The zone of the column at world (x, z) whose top block is at Y {@code top}. */
     Zone at(int x, int z, int top) {
+        if (lakes.contains(x, z)) {
+            return lake;
+        }
+        if (rivers.contains(x, z)) {
+            return river;
+        }
         if (top < beachStart) { // the sea
             return switch (oceanTypeAt(x, z)) {
                 case WARM -> warmOcean;
@@ -151,8 +209,18 @@ final class TempLayout {
         return level < warmTop ? LandType.WARM : level < normalTop ? LandType.NORMAL : LandType.COLD;
     }
 
-    /** Every zone, bottom to top. */
+    /** The lakes of the map (the flats), to dig their beds into the heights. */
+    LakeMask lakes() {
+        return lakes;
+    }
+
+    /** The rivers of the map, to dig their channels into the heights. */
+    RiverMask rivers() {
+        return rivers;
+    }
+
+    /** Every zone, bottom to top, then the lakes and the rivers (they come over the others, the lakes over the rivers). */
     List<Zone> all() {
-        return List.of(deepSea, ocean, warmOcean, beach, warm, normal, cold);
+        return List.of(deepSea, ocean, warmOcean, beach, warm, normal, cold, lake, river);
     }
 }

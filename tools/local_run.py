@@ -285,6 +285,44 @@ def install_plugin_config() -> None:
     print("Plugin config: tools/server/config.yml -> plugins/Isohypse/config.yml")
 
 
+def apply_yaml_overrides(path: Path, overrides: dict) -> None:
+    """Set the values of nested keys in a yaml file by editing its lines, so that its comments are kept."""
+    lines = path.read_text(encoding="utf-8").splitlines()
+
+    def set_in(block: dict, start: int, end: int, indent: int) -> None:
+        for key, value in block.items():
+            for i in range(start, end):
+                match = re.match(rf"^( {{{indent}}}){re.escape(key)}:(\s*)(.*)$", lines[i])
+                if not match:
+                    continue
+                if isinstance(value, dict):
+                    stop = next((j for j in range(i + 1, end) if lines[j].strip() and not lines[j].lstrip().startswith("#")
+                                 and len(lines[j]) - len(lines[j].lstrip()) <= indent), end)
+                    set_in(value, i + 1, stop, indent + 2)
+                else:
+                    comment = re.search(r"\s+#.*$", match.group(3))
+                    lines[i] = f"{match.group(1)}{key}: {value}{comment.group(0) if comment else ''}"
+                break
+            else:
+                print(f"{path.name}: key not found, ignored: {key}")
+
+    set_in(overrides, 0, len(lines), 0)
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def install_lss_config() -> None:
+    """Apply tools/server/lss.yml over the config of LOD Server Support (created by the plugin at its first launch)."""
+    source = SERVER_CONFIG_DIR / "lss.yml"
+    dest = SERVER_DIR / "plugins" / "LodServerSupport" / "lss-server-config.yaml"
+    if not source.exists():
+        return
+    if not dest.exists():
+        print("LSS config: not created yet, tools/server/lss.yml will be applied at the next launch")
+        return
+    apply_yaml_overrides(dest, yaml.safe_load(source.read_text(encoding="utf-8")) or {})
+    print("LSS config: tools/server/lss.yml applied to lss-server-config.yaml")
+
+
 def install_heightmap(path: str | None) -> None:
     """Copy heightmap.bin and settings.json from the folder given with --heightmap into plugins/Isohypse.
 
@@ -377,6 +415,7 @@ def main() -> None:
 
     install_plugins(plugins, args.mc_version, paper_version)
     install_plugin_config()
+    install_lss_config()
     install_heightmap(args.heightmap)
 
     if not args.no_eula:
