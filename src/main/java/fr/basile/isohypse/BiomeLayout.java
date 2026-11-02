@@ -24,6 +24,7 @@ import java.util.Random;
  * the pool. The drawing is the old Minecraft way: the world is cut in cells of about {@link #CELL} blocks (a random
  * point in each square of a grid, every position belongs to the closest point), each cell gets one biome by a hash of
  * the seed, and the cell borders are wobbled by a noise so that they look like natural, irregular edges.</li>
+ * <li>on a river, a river, frozen in the cold zone ({@link #riverAt}); a lake keeps the biome of the land.</li>
  * </ul>
  *
  * <p><b>Underground</b>: deeper than {@link #CAVE_DEPTH} blocks under the surface <i>and</i> under the sea level minus
@@ -94,6 +95,9 @@ final class BiomeLayout {
     private static final Map<OceanType, List<Entry>> DEEP_POOLS = pools(DEEP_OCEANS);
     private static final Entry BEACH = new Entry(Biome.BEACH);
     private static final Entry STONY_SHORE = new Entry(Biome.STONY_SHORE);
+    /** The biome of the rivers, frozen in the cold zone of the intermediate map. */
+    private static final Entry RIVER = new Entry(Biome.RIVER);
+    private static final Entry FROZEN_RIVER = new Entry(Biome.FROZEN_RIVER);
 
     /** Entries with weights, drawn from by a number between 0 and 1. */
     private record WeightedPool(List<Entry> entries, double[] ends) {
@@ -315,6 +319,14 @@ final class BiomeLayout {
         return randomLand(x, z, LAND_POOLS.get(temp.landTypeAt(x, z, top)));
     }
 
+    /**
+     * The biome of a river at the column (x, z) whose top block is at Y {@code top}: a frozen river in the cold zone of
+     * the intermediate map, else a river. The lakes have none of their own: they keep the biome of the land around.
+     */
+    Entry riverAt(int x, int z, int top) {
+        return temp.landTypeAt(x, z, top) == LandType.COLD ? FROZEN_RIVER : RIVER;
+    }
+
     /** The biome of the cell the position belongs to (after the wobble of the borders), drawn in the pool. */
     private Entry randomLand(int x, int z, WeightedPool pool) {
         double px = x + noise(warpX, x, z, WARP_SCALE) * WARP_STRENGTH;
@@ -372,7 +384,7 @@ final class BiomeLayout {
 
     /** Every surface entry {@link #at(int, int, int)} can return, bottom to top, one per biome. */
     static List<Entry> allEntries() {
-        return distinct(List.of(DEEP_OCEANS, OCEANS, List.of(BEACH, STONY_SHORE), LANDS));
+        return distinct(List.of(DEEP_OCEANS, OCEANS, List.of(BEACH, STONY_SHORE), List.of(RIVER, FROZEN_RIVER), LANDS));
     }
 
     /** Every underground entry {@link #at(int, int, int, int)} can return, one per biome. */

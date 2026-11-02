@@ -313,8 +313,8 @@ final class HeightScale {
             writeLayer(stream, first, data, (x, z, top) -> zones.indexOf(temp.at(x, z, top)), logger, "couche des zones");
             long zonesMs = millis(started);
             started = System.nanoTime();
-            writeLayer(stream, directory.layer(WorldFile.BIOME), data, (x, z, top) -> index(indexes, biomes.at(x, z, top)),
-                    logger, "biomes de surface");
+            writeLayer(stream, directory.layer(WorldFile.BIOME), data, (x, z, top) -> index(indexes,
+                    hasRiver(temp, x, z) ? biomes.riverAt(x, z, top) : biomes.at(x, z, top)), logger, "biomes de surface");
             long surfaceMs = millis(started);
             started = System.nanoTime();
             writeLayer(stream, directory.layer(WorldFile.CAVE_BIOME), data,
@@ -333,6 +333,23 @@ final class HeightScale {
         }
         carveHeights(file, directory, data, temp, seed, logger);
         return new Built(zones, palette);
+    }
+
+    /**
+     * Whether the biome cell whose first block is (x, z) (it covers {@link WorldFile#BIOME_STEP} x {@code BIOME_STEP}
+     * blocks from there) has a column of the zone river: the cell is then a river, so that a narrow river is a river all
+     * along and not only where it crosses the one column the cell is read from. A lake column is not a river, even where
+     * a river goes into the lake.
+     */
+    private static boolean hasRiver(TempLayout temp, int x, int z) {
+        for (int dx = 0; dx < WorldFile.BIOME_STEP; dx++) {
+            for (int dz = 0; dz < WorldFile.BIOME_STEP; dz++) {
+                if (temp.rivers().contains(x + dx, z + dz) && !temp.lakes().contains(x + dx, z + dz)) {
+                    return true;
+                }
+            }
+        }
+        return false;
     }
 
     /** The relief the {@link Carver} reads while {@code world.bin} is built: the raw heights and the masks of the zones. */

@@ -71,6 +71,7 @@ BIOME_COLORS = {
     "deep_cold_ocean": 0x1D4A7A, "deep_dark": 0x0A2830, "deep_frozen_ocean": 0x6A92C0,
     "deep_lukewarm_ocean": 0x236B99, "deep_ocean": 0x14347A, "desert": 0xFA9418, "dripstone_caves": 0x8B5A2B,
     "flower_forest": 0x2D8E49, "forest": 0x056621, "frozen_ocean": 0x8FB8E0, "frozen_peaks": 0xFFFFFF,
+    "frozen_river": 0xA0A0FF,
     "grove": 0xC3D6CC, "ice_spikes": 0xB4DCDC, "jagged_peaks": 0xEEF2F6, "jungle": 0x537B09,
     "lukewarm_ocean": 0x2F8FC4, "lush_caves": 0x9ED82A, "mangrove_swamp": 0x67352B, "meadow": 0x83BB6D,
     "ocean": 0x1F4FA3, "old_growth_birch_forest": 0x589C6C, "old_growth_pine_taiga": 0x596651,

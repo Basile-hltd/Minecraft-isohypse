@@ -275,16 +275,18 @@ public final class RealisticGenerator extends ChunkGenerator {
     public void generateNoise(WorldInfo worldInfo, Random random, int chunkX, int chunkZ, ChunkData chunkData) {
         WorldData data = data();
         int minY = chunkData.getMinHeight();
+        List<Flat> flats = flats(worldInfo, data, chunkX, chunkZ);
         // The lakes and the rivers are already dug into the heights of world.bin and their water is in its layer water
-        // (Carver, at build time): here we only read the top of every column and fill stone up to it, then the water of a
-        // lake or a river over it, and sea water where it is under the sea level.
+        // (Carver, at build time): here we only read the top of every column, flatten it under the structures (never in a
+        // lake or a river) and fill stone up to it, then the water of a lake or a river over it, and sea water where it is
+        // under the sea level.
         for (int localX = 0; localX < 16; localX++) {
             for (int localZ = 0; localZ < 16; localZ++) {
                 int x = chunkX * 16 + localX;
                 int z = chunkZ * 16 + localZ;
-                int top = data.heightAt(x, z);
-                chunkData.setRegion(localX, minY, localZ, localX + 1, top + 1, localZ + 1, Material.STONE);
                 int water = data.waterAt(x, z);
+                int top = water > 0 ? data.heightAt(x, z) : groundAt(flats, x, z, data.heightAt(x, z));
+                chunkData.setRegion(localX, minY, localZ, localX + 1, top + 1, localZ + 1, Material.STONE);
                 if (water > 0) {
                     chunkData.setRegion(localX, top + 1, localZ, localX + 1, top + water + 1, localZ + 1, Material.WATER);
                 }
@@ -458,10 +460,11 @@ public final class RealisticGenerator extends ChunkGenerator {
      */
     @Override
     public int getBaseHeight(WorldInfo worldInfo, Random random, int x, int z, HeightMap heightMap) {
-        // The lakes and the rivers are already dug into the heights (Carver), so the top is read straight from the map.
+        // The lakes and the rivers are already dug into the heights and their water is in its own layer (Carver): the bed
+        // is the seabed, the water over it counts for the other maps, as the sea does.
         int top = data().heightAt(x, z);
         boolean seabed = heightMap == HeightMap.OCEAN_FLOOR || heightMap == HeightMap.OCEAN_FLOOR_WG;
-        return (seabed ? top : Math.max(top, SEA_LEVEL)) + 1;
+        return (seabed ? top : Math.max(top + data().waterAt(x, z), SEA_LEVEL)) + 1;
     }
 
     @Override
@@ -471,21 +474,72 @@ public final class RealisticGenerator extends ChunkGenerator {
 
     @Override
     public boolean shouldGenerateSurface() {
-        return false; // for now: only the relief (generateNoise), so the chunks build fast
+        return true;
     }
 
     @Override
     public boolean shouldGenerateCaves() {
-        return false; // for now: no caves, to see the relief and build fast
+        return true;
     }
 
     /**
-     * Caves are turned off for now ({@link #shouldGenerateCaves} is false), so there is nothing the carvers made to
-     * fix or protect: only the relief is generated, which keeps the chunks fast to build. The village protection and
-     * the water fixing that used to be here are dropped for now; they come back with the caves and the structures.
+     * The carvers of the game have made the caves: what they did to the villages, the lakes, the rivers and the sea is
+     * undone. Under the villages, the ground is given back ({@link #protectVillages}). A lake or a river is kept whole, as
+     * the sea: stone under its bed (no cave opens under it, the water would drain into it), water up to its surface, and
+     * none above (the aquifers of the carvers can leave some there). Under the sea, the caves only start
+     * {@link #CARVER_SEA_MARGIN} blocks under the lowest point of the map, and the water stops at the sea level.
      */
     @Override
     public void generateCaves(WorldInfo worldInfo, Random random, int chunkX, int chunkZ, ChunkData chunkData) {
+        WorldData data = data();
+        int limit = Math.max(chunkData.getMinHeight(), data.lowest() - CARVER_SEA_MARGIN);
+        int maxY = chunkData.getMaxHeight();
+        List<Area> villages = villageAreas(worldInfo, chunkX, chunkZ);
+        if (!villages.isEmpty()) {
+            protectVillages(chunkData, chunkX, chunkZ, villages, flats(worldInfo, data, chunkX, chunkZ), data);
+        }
+        for (int localX = 0; localX < 16; localX++) {
+            for (int localZ = 0; localZ < 16; localZ++) {
+                int x = chunkX * 16 + localX;
+                int z = chunkZ * 16 + localZ;
+                int top = data.heightAt(x, z);
+                int water = data.waterAt(x, z);
+                if (water > 0) {
+                    // A lake or a river (down at the sea, its water joins the sea's).
+                    int surface = Math.max(top + water, top < SEA_LEVEL ? SEA_LEVEL : top);
+                    for (int y = limit + 1; y <= surface; y++) {
+                        if (carved(chunkData.getType(localX, y, localZ))) {
+                            chunkData.setBlock(localX, y, localZ, y <= top ? Material.STONE : Material.WATER);
+                        }
+                    }
+                    for (int y = surface + 1; y < maxY; y++) {
+                        if (chunkData.getType(localX, y, localZ) == Material.WATER) {
+                            chunkData.setBlock(localX, y, localZ, Material.AIR);
+                        }
+                    }
+                    continue;
+                }
+                if (top >= SEA_LEVEL) {
+                    continue; // land
+                }
+                for (int y = limit + 1; y <= top; y++) {
+                    if (carved(chunkData.getType(localX, y, localZ))) {
+                        chunkData.setBlock(localX, y, localZ, Material.STONE);
+                    }
+                }
+                for (int y = top + 1; y <= SEA_LEVEL; y++) {
+                    if (chunkData.getType(localX, y, localZ).isAir()) {
+                        chunkData.setBlock(localX, y, localZ, Material.WATER);
+                    }
+                }
+                // the carvers' aquifers can also leave water above the sea (a ravine cut through the surface): none is wanted
+                for (int y = SEA_LEVEL + 1; y < maxY; y++) {
+                    if (chunkData.getType(localX, y, localZ) == Material.WATER) {
+                        chunkData.setBlock(localX, y, localZ, Material.AIR);
+                    }
+                }
+            }
+        }
     }
 
     /** The surface of a village the last time an intact column was seen (top block first), for a chunk that has none. */
@@ -573,25 +627,25 @@ public final class RealisticGenerator extends ChunkGenerator {
 
     @Override
     public boolean shouldGenerateDecorations() {
-        return false; // for now: only the relief
+        return true;
     }
 
     @Override
     public boolean shouldGenerateMobs() {
-        return false; // for now: only the relief
+        return true;
     }
 
     /**
      * The water of the lakes and the rivers is let flow ({@link WaterFlow}). The ruined portals of the game come out
-     * buried (README): ours are placed on the ground instead; they come back with the structures.
+     * buried (README): ours are placed on the ground instead.
      */
     @Override
     public List<BlockPopulator> getDefaultPopulators(World world) {
-        return List.of(new WaterFlow());
+        return List.of(new WaterFlow(), plugin.ruinedPortals());
     }
 
     @Override
     public boolean shouldGenerateStructures() {
-        return false; // for now: only the relief
+        return true;
     }
 }
