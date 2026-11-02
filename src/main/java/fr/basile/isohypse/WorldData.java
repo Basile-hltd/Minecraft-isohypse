@@ -42,6 +42,7 @@ final class WorldData {
     private final WorldFile.Layer surface;
     private final WorldFile.Layer caves;
     private final WorldFile.Layer deepCaves;
+    private final WorldFile.Layer water;
     /** The biome of each index of the layers (the list of settings.json), null for "none" or a biome this version lacks. */
     private final Biome[] biomes;
     private final int lowest;
@@ -59,6 +60,7 @@ final class WorldData {
         this.surface = directory.layer(WorldFile.BIOME);
         this.caves = directory.layer(WorldFile.CAVE_BIOME);
         this.deepCaves = directory.layer(WorldFile.DEEP_CAVE_BIOME);
+        this.water = directory.layer(WorldFile.WATER);
         this.biomes = biomes;
         this.lowest = lowest;
         this.seaLevel = seaLevel;
@@ -113,6 +115,13 @@ final class WorldData {
         long column = Math.floorMod(x + width / 2, width);
         long row = Math.floorMod(z + height / 2, height);
         return file.get(SHORT, heights.offset() + 2 * (row * width + column));
+    }
+
+    /** The blocks of water of a lake or a river over the top block of the column (x, z), 0 for none. */
+    int waterAt(int x, int z) {
+        long column = Math.floorMod(x + width / 2, width);
+        long row = Math.floorMod(z + height / 2, height);
+        return file.get(ValueLayout.JAVA_BYTE, water.offset() + row * width + column) & 0xFF;
     }
 
     /** Whether the column (x, z) is a lake (the zone "lake" of the intermediate map): a flat, whose height is the water level. */

@@ -2,10 +2,10 @@ package fr.basile.isohypse;
 
 /**
  * Shapes the ground of the lakes and the rivers: a lake gets a bed sloping down from its shore, a river a channel under
- * its water level with banks lowered around it. This is the solid top of a column once the water bodies are dug; the
- * water itself is not here. The result depends on the column and its neighbours alone (within a fixed reach), so it can
- * be computed for any area, and is baked into the heights of {@code world.bin} at build time ({@link HeightScale}) so the
- * generator only reads it. All coordinates are world coordinates (the origin is the middle of the map).
+ * its water level with banks lowered around it. This is the solid top of a column once the water bodies are dug, and how
+ * much water of a lake or a river is over it. The result depends on the column and its neighbours alone (within a fixed
+ * reach), so it can be computed for any area, and is baked into the layers {@code height} and {@code water} of
+ * {@code world.bin} at build time ({@link HeightScale}) so the generator only reads it. All coordinates are world coordinates (the origin is the middle of the map).
  */
 final class Carver {
 
@@ -34,28 +34,54 @@ final class Carver {
     }
 
     /**
-     * The solid top Y of every column of the area of {@code width} x {@code height} columns from (x0, z0), indexed by
-     * {@code (x - x0) * height + (z - z0)}, with the lakes and the rivers dug in: the bed of a lake (its water level less
-     * its depth), the channel or lowered bank of a river, else the natural height. The water is not placed here.
+     * The water is this many blocks under the level of a lake or a river (the natural height of a lake, the level of a
+     * river), so a lake or a river is not full to the brim of its bed.
      */
-    static int[] carveTile(Relief data, long seed, int x0, int z0, int width, int height) {
+    private static final int WATER_DROP = 1;
+
+    /**
+     * The carving of an area of columns, indexed as in {@link #carveTile}: {@code tops} the solid top Y of each column,
+     * {@code water} the blocks of water of a lake or a river over it (0 for none).
+     */
+    record Carved(int[] tops, int[] water) {}
+
+    /**
+     * The carving of every column of the area of {@code width} x {@code height} columns from (x0, z0), indexed by
+     * {@code (x - x0) * height + (z - z0)}. The solid top is the bed of a lake (its water level less its depth), the
+     * channel or lowered bank of a river, else the natural height. The water of a lake or a river fills its bed up to
+     * {@link #WATER_DROP} blocks under its level; the sea is not here.
+     */
+    static Carved carveTile(Relief data, long seed, int x0, int z0, int width, int height) {
         int[] lakeDepths = lakeDepths(data, seed, x0, z0, width, height);
         River rivers = riverTops(data, seed, x0, z0, width, height);
         int[] out = new int[width * height];
+        int[] water = new int[width * height];
         for (int i = 0; i < width; i++) {
             for (int j = 0; j < height; j++) {
                 int index = i * height + j;
                 int top = data.heightAt(x0 + i, z0 + j);
+                int level = NO_RIVER; // the level of the lake or the river of the column, if any
                 if (lakeDepths != null && lakeDepths[index] >= 0) {
                     out[index] = top - lakeDepths[index]; // a lake: the bed, under its water level (the natural height)
+                    if (rivers != null) {
+                        // A river that goes into the lake (RiverMask) cuts its channel through the shore of the lake.
+                        out[index] = Math.min(out[index], rivers.top(index, top));
+                    }
+                    level = top;
                 } else if (rivers != null) {
                     out[index] = rivers.top(index, top); // the channel of a river, its banks, or the natural height
+                    if (rivers.isRiver(index)) {
+                        level = rivers.levels()[index];
+                    }
                 } else {
                     out[index] = top;
                 }
+                if (level != NO_RIVER) {
+                    water[index] = Math.clamp(level - WATER_DROP - out[index], 0, 255);
+                }
             }
         }
-        return out;
+        return new Carved(out, water);
     }
 
     /**

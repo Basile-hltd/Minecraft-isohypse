@@ -31,6 +31,12 @@ final class RiverMask implements AutoCloseable {
     private static final int MAX_LENGTH = 1_000_000;
     /** Half the number of columns of the moving average that smooths a path (on each side). */
     private static final int SMOOTH = 6;
+    /**
+     * How many columns of a lake a river goes into, at the lake it leaves and at the one it ends in: its channel then cuts
+     * the shore of the lake, where the bed of the lake is still at the water level ({@link Carver}), so there is no wall
+     * between them. Those columns are only stamped, never a place where another river joins this one.
+     */
+    private static final int INTO_LAKE = 6;
     private static final int[] DX = {1, 1, 0, -1, -1, -1, 0, 1};
     private static final int[] DZ = {0, 1, 1, 1, 0, -1, -1, -1};
 
@@ -165,6 +171,7 @@ final class RiverMask implements AutoCloseable {
                     // A lake: its columns by a flood fill, and the lowest column around it, the outlet.
                     int level = data.valueAt((int) (index % width), (int) (index / width));
                     long outlet = -1;
+                    long outletLake = -1; // the lake column next to the outlet, from which the river leaves
                     int outletHeight = Integer.MAX_VALUE;
                     int head = 0;
                     int tail = 0;
@@ -195,6 +202,7 @@ final class RiverMask implements AutoCloseable {
                             } else if (data.valueAt(c, r) < outletHeight) {
                                 outletHeight = data.valueAt(c, r);
                                 outlet = next;
+                                outletLake = cell;
                             }
                         }
                         if (head > 1 << 20 && head > tail / 2) { // keep the queue short
@@ -204,7 +212,7 @@ final class RiverMask implements AutoCloseable {
                         }
                     }
                     if (outlet >= 0 && outletHeight <= level + climb) {
-                        int end = trace(data, lakes, outlet, level, climb, snap, excludeUpTo, sourceLake);
+                        int end = trace(data, lakes, outlet, outletLake, level, climb, snap, excludeUpTo, sourceLake);
                         if (end >= 0) {
                             ends[end]++;
                         }
@@ -227,8 +235,8 @@ final class RiverMask implements AutoCloseable {
      *
      * @return how the river ended: 0 in a lake, 1 in the sea, 2 in another river, 3 stuck; -1 if it is too short to keep
      */
-    private int trace(HeightMapData data, LakeMask lakes, long outlet, int lakeLevel, int climb, int snap, int excludeUpTo,
-                      Set<Long> sourceLake) {
+    private int trace(HeightMapData data, LakeMask lakes, long outlet, long outletLake, int lakeLevel, int climb, int snap,
+                      int excludeUpTo, Set<Long> sourceLake) {
         if (onRiver.get(outlet) >= 0) {
             return -1;
         }
@@ -282,12 +290,34 @@ final class RiverMask implements AutoCloseable {
         if (path.size < 2 && joined < 0) {
             return -1;
         }
+        // The river goes on into the lake it leaves, and into the one it ends in, so its channel cuts through the shore.
+        Longs head = new Longs();
+        int lakeColumn = (int) (outletLake % width);
+        int lakeRow = (int) (outletLake / width);
+        intoLake(lakes, head, lakeColumn, lakeRow, lakeColumn - (int) (outlet % width), lakeRow - (int) (outlet / width),
+                INTO_LAKE);
+        Longs tail = new Longs();
+        if (end == 0) {
+            long last = path.values[path.size - 1];
+            long before = path.values[path.size - 2];
+            int lastColumn = (int) (last % width);
+            int lastRow = (int) (last / width);
+            int stepX = lastColumn - (int) (before % width);
+            int stepZ = lastRow - (int) (before / width);
+            intoLake(lakes, tail, lastColumn + stepX, lastRow + stepZ, stepX, stepZ, INTO_LAKE - 1);
+        }
         int start = cells.size;
+        for (int i = head.size - 1; i >= 0; i--) { // from inside the lake out to the outlet
+            cells.add(head.values[i]);
+        }
         for (int i = 0; i < path.size; i++) {
             onRiver.putIfAbsent(path.values[i], cells.size);
             cells.add(path.values[i]);
         }
-        rivers.add(new int[] {start, path.size, joined >= 0 ? onRiver.get(joined) : -1});
+        for (int i = 0; i < tail.size; i++) {
+            cells.add(tail.values[i]);
+        }
+        rivers.add(new int[] {start, cells.size - start, joined >= 0 ? onRiver.get(joined) : -1});
         joinedCell.add(new long[] {joined});
         return end;
     }
@@ -321,6 +351,21 @@ final class RiverMask implements AutoCloseable {
             }
         }
         return best;
+    }
+
+    /**
+     * Adds to {@code out} up to {@code count} columns in a straight line from ({@code column}, {@code row}) (included)
+     * by steps of ({@code dx}, {@code dz}), stopping at the first that is not a lake or is off the map.
+     */
+    private void intoLake(LakeMask lakes, Longs out, int column, int row, int dx, int dz, int count) {
+        for (int i = 0; i < count; i++) {
+            if (column < 0 || column >= width || row < 0 || row >= height || !lakes.at(column, row)) {
+                return;
+            }
+            out.add((long) row * width + column);
+            column += dx;
+            row += dz;
+        }
     }
 
     /** Adds the columns of the straight line from just after {@code from} up to {@code to} (included) to {@code path}. */

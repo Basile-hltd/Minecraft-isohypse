@@ -355,38 +355,49 @@ final class HeightScale {
     }
 
     /**
-     * Digs the lakes and the rivers into the layer {@code height} of {@code file}: each column gets its carved solid top
-     * ({@link Carver}), read from the raw heights and the masks, written back as a big-endian 16-bit value. Done tile by
-     * tile so the carving of each only reads a bounded margin around it; the raw heights ({@code data}) are never changed,
-     * so no carved column feeds the carving of another.
+     * Digs the lakes and the rivers into the layer {@code height} of {@code file} and fills the layer {@code water}, which
+     * comes last and is appended here: each column gets its carved solid top ({@link Carver}), read from the raw heights
+     * and the masks, written back as a big-endian 16-bit value, and the blocks of water over it. Done tile by tile so the
+     * carving of each only reads a bounded margin around it; the raw heights ({@code data}) are never changed, so no
+     * carved column feeds the carving of another.
      */
     private static void carveHeights(File file, WorldFile.Directory directory, HeightMapData data, TempLayout temp,
                                      long seed, Logger logger) throws IOException {
         long started = System.nanoTime();
         WorldFile.Layer layer = directory.layer(WorldFile.HEIGHT);
+        WorldFile.Layer waterLayer = directory.layer(WorldFile.WATER);
+        if (Files.size(file.toPath()) != waterLayer.offset()) {
+            throw new IOException("world.bin: the layer water does not follow the biomes: " + file);
+        }
+        try (RandomAccessFile raf = new RandomAccessFile(file, "rw")) {
+            raf.setLength(waterLayer.offset() + waterLayer.bytes()); // zeros: no water, until the carving fills it
+        }
         int width = directory.width();
         int height = directory.height();
         int tile = 64;
         Relief relief = new BuildRelief(data, temp.lakes(), temp.rivers());
-        try (MappedFile map = MappedFile.writable(file, layer.offset(), layer.bytes())) {
+        try (MappedFile map = MappedFile.writable(file, layer.offset(), layer.bytes());
+             MappedFile waterMap = MappedFile.writable(file, waterLayer.offset(), waterLayer.bytes())) {
             MemorySegment segment = map.segment();
+            MemorySegment waterSegment = waterMap.segment();
             for (int row0 = 0; row0 < height; row0 += tile) {
                 int rows = Math.min(tile, height - row0);
                 for (int col0 = 0; col0 < width; col0 += tile) {
                     int cols = Math.min(tile, width - col0);
-                    int[] carved = Carver.carveTile(relief, seed, col0 - width / 2, row0 - height / 2, cols, rows);
+                    Carver.Carved carved = Carver.carveTile(relief, seed, col0 - width / 2, row0 - height / 2, cols, rows);
                     for (int i = 0; i < cols; i++) {
                         for (int j = 0; j < rows; j++) {
-                            int value = carved[i * rows + j];
-                            long index = 2L * ((long) (row0 + j) * width + col0 + i);
-                            segment.set(MappedFile.BYTE, index, (byte) (value >> 8));
-                            segment.set(MappedFile.BYTE, index + 1, (byte) value);
+                            int value = carved.tops()[i * rows + j];
+                            long cell = (long) (row0 + j) * width + col0 + i;
+                            segment.set(MappedFile.BYTE, 2 * cell, (byte) (value >> 8));
+                            segment.set(MappedFile.BYTE, 2 * cell + 1, (byte) value);
+                            waterSegment.set(MappedFile.BYTE, cell, (byte) carved.water()[i * rows + j]);
                         }
                     }
                 }
             }
         }
-        logger.info("lacs et rivières creusés dans les hauteurs de world.bin : " + millis(started) + " ms");
+        logger.info("lacs et rivières creusés et remplis dans world.bin : " + millis(started) + " ms");
     }
 
     /** Writes a layer of one byte per cell, band by band. */

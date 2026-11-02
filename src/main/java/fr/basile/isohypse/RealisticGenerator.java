@@ -11,6 +11,7 @@ import org.bukkit.World;
 import org.bukkit.generator.BiomeProvider;
 import org.bukkit.generator.BlockPopulator;
 import org.bukkit.generator.ChunkGenerator;
+import org.bukkit.generator.LimitedRegion;
 import org.bukkit.generator.WorldInfo;
 import org.bukkit.generator.structure.GeneratedStructure;
 import org.bukkit.generator.structure.StructurePiece;
@@ -274,18 +275,58 @@ public final class RealisticGenerator extends ChunkGenerator {
     public void generateNoise(WorldInfo worldInfo, Random random, int chunkX, int chunkZ, ChunkData chunkData) {
         WorldData data = data();
         int minY = chunkData.getMinHeight();
-        // The lakes and the rivers are already dug into the heights of world.bin (Carver, at build time): here we only
-        // read the top of every column and fill stone up to it, with sea water where it is under the sea level. The water
-        // of the lakes and the rivers is left out for now (to be added back later from the zone of each column).
+        // The lakes and the rivers are already dug into the heights of world.bin and their water is in its layer water
+        // (Carver, at build time): here we only read the top of every column and fill stone up to it, then the water of a
+        // lake or a river over it, and sea water where it is under the sea level.
         for (int localX = 0; localX < 16; localX++) {
             for (int localZ = 0; localZ < 16; localZ++) {
-                int top = data.heightAt(chunkX * 16 + localX, chunkZ * 16 + localZ);
+                int x = chunkX * 16 + localX;
+                int z = chunkZ * 16 + localZ;
+                int top = data.heightAt(x, z);
                 chunkData.setRegion(localX, minY, localZ, localX + 1, top + 1, localZ + 1, Material.STONE);
+                int water = data.waterAt(x, z);
+                if (water > 0) {
+                    chunkData.setRegion(localX, top + 1, localZ, localX + 1, top + water + 1, localZ + 1, Material.WATER);
+                }
                 if (top < SEA_LEVEL) {
                     chunkData.setRegion(localX, top + 1, localZ, localX + 1, SEA_LEVEL + 1, localZ + 1, Material.WATER);
                 }
             }
         }
+    }
+
+    /**
+     * The water of the lakes and the rivers is placed still by {@link #generateNoise}: a block of it next to air (a step
+     * down a river, a bank lower than the water) would hang there until a block next to it changes. This asks the game to
+     * let each of those flow once the chunk is done, as it does for the water of its own aquifers.
+     */
+    private final class WaterFlow extends BlockPopulator {
+
+        @Override
+        public void populate(WorldInfo worldInfo, Random random, int chunkX, int chunkZ, LimitedRegion region) {
+            WorldData data = data();
+            for (int x = chunkX * 16; x < chunkX * 16 + 16; x++) {
+                for (int z = chunkZ * 16; z < chunkZ * 16 + 16; z++) {
+                    int water = data.waterAt(x, z);
+                    if (water == 0) {
+                        continue;
+                    }
+                    int top = data.heightAt(x, z);
+                    // The water blocks from the lowest air next to the column up are those that can flow.
+                    int open = Math.min(Math.min(surfaceAt(data, x + 1, z), surfaceAt(data, x - 1, z)),
+                            Math.min(surfaceAt(data, x, z + 1), surfaceAt(data, x, z - 1))) + 1;
+                    for (int y = Math.max(top + 1, open); y <= top + water; y++) {
+                        region.scheduleFluidUpdate(x, y, z);
+                    }
+                }
+            }
+        }
+    }
+
+    /** The Y of the highest block of the column (x, z) that is not air: its top, or the water over it (the sea's too). */
+    private static int surfaceAt(WorldData data, int x, int z) {
+        int top = data.heightAt(x, z);
+        return Math.max(top + data.waterAt(x, z), Math.max(top, SEA_LEVEL));
     }
 
     /**
@@ -540,10 +581,13 @@ public final class RealisticGenerator extends ChunkGenerator {
         return false; // for now: only the relief
     }
 
-    /** The ruined portals of the game come out buried (README): ours are placed on the ground instead. */
+    /**
+     * The water of the lakes and the rivers is let flow ({@link WaterFlow}). The ruined portals of the game come out
+     * buried (README): ours are placed on the ground instead; they come back with the structures.
+     */
     @Override
     public List<BlockPopulator> getDefaultPopulators(World world) {
-        return List.of(); // for now: no populators (the ruined portals come back with the structures)
+        return List.of(new WaterFlow());
     }
 
     @Override
