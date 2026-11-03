@@ -292,12 +292,13 @@ final class HeightScale {
         long started = System.nanoTime();
         long read = 0; // the heights are mapped, not read
         try (TempLayout temp = TempLayout.build(data, SEA_LEVEL, settings, dir, logger)) {
-            return writeLayers(file, directory, data, temp, seed, logger, read, millis(started));
+            return writeLayers(file, directory, data, temp, settings, seed, logger, read, millis(started));
         }
     }
 
-    private static Built writeLayers(File file, WorldFile.Directory directory, HeightMapData data, TempLayout temp, long seed,
-                                     Logger logger, long read, long built) throws IOException {
+    private static Built writeLayers(File file, WorldFile.Directory directory, HeightMapData data, TempLayout temp,
+                                     TerrainSettings settings, long seed, Logger logger, long read, long built)
+            throws IOException {
         WorldFile.Layer first = directory.layer(WorldFile.TEMP);
         long started;
         List<TempLayout.Zone> zones = temp.all();
@@ -331,7 +332,7 @@ final class HeightScale {
                     + " ms, couche des zones " + zonesMs + " ms, biomes de surface " + surfaceMs + " ms, grottes " + cavesMs
                     + " ms, grottes profondes " + deepMs + " ms");
         }
-        carveHeights(file, directory, data, temp, seed, logger);
+        carveHeights(file, directory, data, temp, settings, seed, logger);
         return new Built(zones, palette);
     }
 
@@ -369,6 +370,11 @@ final class HeightScale {
         public boolean riverAt(int x, int z) {
             return rivers.contains(x, z);
         }
+
+        @Override
+        public int riverLevelAt(int x, int z) {
+            return rivers.levelAt(x, z);
+        }
     }
 
     /**
@@ -379,7 +385,7 @@ final class HeightScale {
      * carved column feeds the carving of another.
      */
     private static void carveHeights(File file, WorldFile.Directory directory, HeightMapData data, TempLayout temp,
-                                     long seed, Logger logger) throws IOException {
+                                     TerrainSettings settings, long seed, Logger logger) throws IOException {
         long started = System.nanoTime();
         WorldFile.Layer layer = directory.layer(WorldFile.HEIGHT);
         WorldFile.Layer waterLayer = directory.layer(WorldFile.WATER);
@@ -393,6 +399,8 @@ final class HeightScale {
         int height = directory.height();
         int tile = 64;
         Relief relief = new BuildRelief(data, temp.lakes(), temp.rivers());
+        Carver.RiverProfile profile = new Carver.RiverProfile(settings.riverDepth(), settings.riverBankReach(),
+                settings.riverBankSlope());
         try (MappedFile map = MappedFile.writable(file, layer.offset(), layer.bytes());
              MappedFile waterMap = MappedFile.writable(file, waterLayer.offset(), waterLayer.bytes())) {
             MemorySegment segment = map.segment();
@@ -401,7 +409,8 @@ final class HeightScale {
                 int rows = Math.min(tile, height - row0);
                 for (int col0 = 0; col0 < width; col0 += tile) {
                     int cols = Math.min(tile, width - col0);
-                    Carver.Carved carved = Carver.carveTile(relief, seed, col0 - width / 2, row0 - height / 2, cols, rows);
+                    Carver.Carved carved = Carver.carveTile(relief, seed, col0 - width / 2, row0 - height / 2, cols, rows,
+                            profile);
                     for (int i = 0; i < cols; i++) {
                         for (int j = 0; j < rows; j++) {
                             int value = carved.tops()[i * rows + j];

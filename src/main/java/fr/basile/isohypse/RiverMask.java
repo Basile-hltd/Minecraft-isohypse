@@ -31,6 +31,12 @@ final class RiverMask implements AutoCloseable {
     private static final int MAX_LENGTH = 1_000_000;
     /** Half the number of columns of the moving average that smooths a path (on each side). */
     private static final int SMOOTH = 6;
+    /** Half the number of columns of the moving average that smooths the heights of a path into its water level. */
+    private static final int LEVEL_SMOOTH = 6;
+    /** Added to a water level to store it in a short, so that 0 is free to mean none (the lowest level is Y -64). */
+    private static final int LEVEL_OFFSET = 65;
+    /** What {@link #levelAt} gives for a column that is not a river. */
+    static final int NO_LEVEL = Integer.MIN_VALUE;
     /**
      * How many columns of a lake a river goes into, at the lake it leaves and at the one it ends in: its channel then cuts
      * the shore of the lake, where the bed of the lake is still at the water level ({@link Carver}), so there is no wall
@@ -44,6 +50,9 @@ final class RiverMask implements AutoCloseable {
     private final int height;
     private final MappedFile bitsFile;
     private final MemorySegment bits;
+    /** For each column, the water level of the river there plus {@link #LEVEL_OFFSET} (a short), 0 for none. */
+    private final MappedFile levelsFile;
+    private final MemorySegment levels;
 
     /** The columns (row * width + column) of all the rivers, one after the other. */
     private static final class Longs {
@@ -139,6 +148,13 @@ final class RiverMask implements AutoCloseable {
         this.height = data.height();
         this.bitsFile = MappedFile.scratch(dir, ((long) width * height + 7) / 8);
         this.bits = bitsFile.segment();
+        try {
+            this.levelsFile = MappedFile.scratch(dir, 2L * width * height);
+        } catch (IOException | RuntimeException | Error e) {
+            bitsFile.close();
+            throw e;
+        }
+        this.levels = levelsFile.segment();
         if (riverWidth <= 0) {
             return;
         }
@@ -146,6 +162,7 @@ final class RiverMask implements AutoCloseable {
             find(data, lakes, climb, riverWidth, snap, excludeUpTo, logger, label, dir);
         } catch (IOException | RuntimeException | Error e) {
             bitsFile.close();
+            levelsFile.close();
             throw e;
         }
     }
@@ -475,7 +492,7 @@ final class RiverMask implements AutoCloseable {
         for (int i = 0; i < count; i++) {
             startOf[i] = rivers.get(i)[0];
         }
-        List<List<int[]>> inflows = new ArrayList<>(); // for each river: {index in the path, sources}
+        List<List<int[]>> inflows = new ArrayList<>(); // for each river: {index in the path, sources, water level}
         for (int i = 0; i < count; i++) {
             inflows.add(new ArrayList<>());
         }
@@ -487,15 +504,21 @@ final class RiverMask implements AutoCloseable {
             int points = length + (joinedColumn >= 0 ? 1 : 0);
             double[] xs = new double[points];
             double[] zs = new double[points];
+            int[] heights = new int[points];
             for (int k = 0; k < points; k++) {
                 long cell = k < length ? cells.values[river[0] + k] : joinedColumn;
                 xs[k] = cell % width;
                 zs[k] = cell / width;
+                heights[k] = valueAt(data, cell);
             }
             int[] sources = new int[points + 1];
+            int[] inflowLevel = new int[points + 1]; // the lowest water level of the rivers that join here
+            Arrays.fill(inflowLevel, Integer.MAX_VALUE);
             for (int[] inflow : inflows.get(i)) {
                 sources[inflow[0]] += inflow[1];
+                inflowLevel[inflow[0]] = Math.min(inflowLevel[inflow[0]], inflow[2]);
             }
+            int[] waterLevels = waterLevels(heights, inflowLevel);
             int flow = 1;
             for (int k = 0; k < points; k++) {
                 flow += sources[k];
@@ -509,21 +532,48 @@ final class RiverMask implements AutoCloseable {
                 }
                 x /= 2 * span + 1;
                 z /= 2 * span + 1;
-                columns += disc(data, x, z, radius, excludeUpTo);
+                columns += disc(data, x, z, radius, waterLevels[k], excludeUpTo);
             }
             if (river[2] >= 0) {
                 int owner = Arrays.binarySearch(startOf, river[2]);
                 if (owner < 0) {
                     owner = -owner - 2; // the river whose start is just before that position
                 }
-                inflows.get(owner).add(new int[] {river[2] - startOf[owner], flow});
+                inflows.get(owner).add(new int[] {river[2] - startOf[owner], flow, waterLevels[points - 1]});
             }
         }
         return columns;
     }
 
-    /** Sets the columns within {@code radius} of (x, z) that are above the sea; returns how many were not set. */
-    private long disc(HeightMapData data, double x, double z, double radius, int excludeUpTo) {
+    /**
+     * The water level at each point of a river from the heights of its columns: the heights smoothed along the path (a
+     * moving average, rounded down), then never higher than at any point before it, nor than the level of a river that
+     * joins it upstream ({@code inflowLevel} by point, {@link Integer#MAX_VALUE} for none). Water only flows down, so a
+     * level never rises downstream: a climb over a pass, or a bump of the relief, is cut to the level before it.
+     */
+    private static int[] waterLevels(int[] heights, int[] inflowLevel) {
+        int points = heights.length;
+        int[] levels = new int[points];
+        int lowest = Integer.MAX_VALUE;
+        for (int k = 0; k < points; k++) {
+            int span = Math.min(LEVEL_SMOOTH, Math.min(k, points - 1 - k));
+            long sum = 0;
+            for (int j = k - span; j <= k + span; j++) {
+                sum += heights[j];
+            }
+            int smoothed = (int) Math.floorDiv(sum, 2L * span + 1);
+            lowest = Math.min(lowest, Math.min(smoothed, inflowLevel[k]));
+            levels[k] = lowest;
+        }
+        return levels;
+    }
+
+    /**
+     * Sets the columns within {@code radius} of (x, z) that are above the sea, and gives them the water {@code level}
+     * (the lowest of the levels of the discs that cover a column); returns how many were not set.
+     */
+    private long disc(HeightMapData data, double x, double z, double radius, int level, int excludeUpTo) {
+        short stored = (short) Math.clamp(level + LEVEL_OFFSET, 1, Short.MAX_VALUE);
         long added = 0;
         int c0 = Math.max(0, (int) Math.floor(x - radius));
         int c1 = Math.min(width - 1, (int) Math.ceil(x + radius));
@@ -542,6 +592,10 @@ final class RiverMask implements AutoCloseable {
                 if (updated != old) {
                     bits.set(MappedFile.BYTE, index >> 3, updated);
                     added++;
+                }
+                short before = levels.get(MappedFile.SHORT, 2 * index);
+                if (before == 0 || stored < before) {
+                    levels.set(MappedFile.SHORT, 2 * index, stored);
                 }
             }
         }
@@ -564,9 +618,22 @@ final class RiverMask implements AutoCloseable {
         return isSet(bits, index);
     }
 
-    /** Frees the scratch file of the mask. */
+    /**
+     * The water level of the river at the column at world (x, z), or {@link #NO_LEVEL} when it is not a river; the map
+     * repeats outside its bounds. It never rises along a river, from its source to where it ends.
+     */
+    int levelAt(int x, int z) {
+        int column = Math.floorMod(x + width / 2, width);
+        int row = Math.floorMod(z + height / 2, height);
+        long index = (long) row * width + column;
+        short stored = levels.get(MappedFile.SHORT, 2 * index);
+        return stored == 0 ? NO_LEVEL : stored - LEVEL_OFFSET;
+    }
+
+    /** Frees the scratch files of the mask. */
     @Override
     public void close() {
         bitsFile.close();
+        levelsFile.close();
     }
 }

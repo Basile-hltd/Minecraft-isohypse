@@ -12,4 +12,7 @@ interface Relief {
     boolean lakeAt(int x, int z);
 
     boolean riverAt(int x, int z);
+
+    /** The water level of the river at the column, which never rises along the river; only for a river column. */
+    int riverLevelAt(int x, int z);
 }
