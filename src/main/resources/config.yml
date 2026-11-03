@@ -28,6 +28,9 @@ realistic:
     river_depth: 3             # profondeur (blocs) de l'eau au milieu du lit d'une rivière (1 sur les bords du lit) ; 1 au minimum
     river_bank_reach: 16       # distance (blocs) autour d'une rivière sur laquelle le sol est abaissé en berge, avec un fondu jusqu'au terrain ; 0 : pas de berge
     river_bank_slope: 1.0      # blocs dont la berge monte par bloc depuis la rivière (1 : pente normale, moins : plus douce) ; plus que 0
+    mushroom_island_size: 300     # une île champignon de tant de blocs de large est posée partout où la mer est à au moins tant de blocs de toute terre dans chaque direction ; 0 : aucune, sinon 64 au minimum
+    mushroom_island_spacing: 3000 # distance minimale (blocs) entre les milieux de deux îles champignon ; au moins le double de la taille
+    mushroom_island_height: 14    # hauteur (blocs) du point le plus haut d'une île champignon au-dessus du niveau de la mer
 
 # Monde : hauteur maximale de l'overworld (le sol reste à y=-64). Arrondie à la valeur la plus proche acceptée par le jeu :
 # un multiple de 16 de 128 à 2032 ; 320 est la valeur de Minecraft (rien n'est changé). Ne s'applique qu'à un monde qui

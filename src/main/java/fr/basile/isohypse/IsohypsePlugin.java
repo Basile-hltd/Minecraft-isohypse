@@ -218,7 +218,10 @@ public final class IsohypsePlugin extends JavaPlugin implements Listener {
                 c.getInt("realistic.temp.river_lake_snap", d.riverLakeSnap()),
                 c.getInt("realistic.temp.river_depth", d.riverDepth()),
                 c.getInt("realistic.temp.river_bank_reach", d.riverBankReach()),
-                c.getDouble("realistic.temp.river_bank_slope", d.riverBankSlope()));
+                c.getDouble("realistic.temp.river_bank_slope", d.riverBankSlope()),
+                c.getInt("realistic.temp.mushroom_island_size", d.mushroomIslandSize()),
+                c.getInt("realistic.temp.mushroom_island_spacing", d.mushroomIslandSpacing()),
+                c.getInt("realistic.temp.mushroom_island_height", d.mushroomIslandHeight()));
     }
 
     /** Prints the real-world point (latitude, longitude) that the Realistic style puts at x=0, z=0. */

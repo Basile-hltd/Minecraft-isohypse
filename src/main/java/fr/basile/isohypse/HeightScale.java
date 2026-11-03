@@ -291,7 +291,7 @@ final class HeightScale {
         }
         long started = System.nanoTime();
         long read = 0; // the heights are mapped, not read
-        try (TempLayout temp = TempLayout.build(data, SEA_LEVEL, settings, dir, logger)) {
+        try (TempLayout temp = TempLayout.build(data, SEA_LEVEL, settings, seed, dir, logger)) {
             return writeLayers(file, directory, data, temp, settings, seed, logger, read, millis(started));
         }
     }
@@ -354,7 +354,13 @@ final class HeightScale {
     }
 
     /** The relief the {@link Carver} reads while {@code world.bin} is built: the raw heights and the masks of the zones. */
-    private record BuildRelief(HeightMapData data, LakeMask lakes, RiverMask rivers) implements Relief {
+    private record BuildRelief(HeightMapData data, LakeMask lakes, RiverMask rivers, IslandMask islands)
+            implements Relief {
+
+        @Override
+        public int islandTopAt(int x, int z) {
+            return islands.isEmpty() ? IslandMask.NO_TOP : islands.topAt(x, z, data.heightAt(x, z));
+        }
 
         @Override
         public int heightAt(int x, int z) {
@@ -398,7 +404,7 @@ final class HeightScale {
         int width = directory.width();
         int height = directory.height();
         int tile = 64;
-        Relief relief = new BuildRelief(data, temp.lakes(), temp.rivers());
+        Relief relief = new BuildRelief(data, temp.lakes(), temp.rivers(), temp.islands());
         Carver.RiverProfile profile = new Carver.RiverProfile(settings.riverDepth(), settings.riverBankReach(),
                 settings.riverBankSlope());
         try (MappedFile map = MappedFile.writable(file, layer.offset(), layer.bytes());

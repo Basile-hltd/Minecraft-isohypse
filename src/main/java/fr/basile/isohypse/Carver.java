@@ -68,6 +68,11 @@ final class Carver {
         for (int i = 0; i < width; i++) {
             for (int j = 0; j < height; j++) {
                 int index = i * height + j;
+                int island = data.islandTopAt(x0 + i, z0 + j);
+                if (island != IslandMask.NO_TOP) { // a mushroom island, raised from the sea floor
+                    out[index] = island;
+                    continue;
+                }
                 int top = data.heightAt(x0 + i, z0 + j);
                 int level = NO_RIVER; // the level of the lake or the river of the column, if any
                 if (lakeDepths != null && lakeDepths[index] >= 0) {
@@ -321,7 +326,8 @@ final class Carver {
         return (valueNoise(seed, x, z, LAKE_NOISE_CELL) * 2 + valueNoise(seed + 1, x, z, LAKE_NOISE_CELL / 3)) / 3;
     }
 
-    private static double valueNoise(long seed, int x, int z, int cell) {
+    /** Smooth value noise in [-1, 1] at (x, z), in cells of {@code cell} blocks. */
+    static double valueNoise(long seed, int x, int z, int cell) {
         int cx = Math.floorDiv(x, cell);
         int cz = Math.floorDiv(z, cell);
         double fx = (double) Math.floorMod(x, cell) / cell;
