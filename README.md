@@ -57,6 +57,7 @@ Au premier lancement, le plugin crée `plugins/Isohypse/config.yml` :
 | `realistic.latitude` | Latitude (-90 à 90) du point du monde réel placé au centre du monde (x=0, z=0) |
 | `realistic.longitude` | Longitude (-180 à 180) de ce même point |
 | `realistic.size` | Côté en mètres de la zone réelle récupérée (défaut 1000) |
+| `realistic.swisstopo` | `true` (défaut) : les altitudes swisstopo (swissALTI3D) sont utilisées là où elles couvrent la zone, Terrarium ailleurs ; `false` : Terrarium partout. Le changer refait la height map et retélécharge les tuiles |
 | `world.max_height` | Hauteur maximale de l'overworld (défaut 320 = vanilla, le sol reste à y=-64). Arrondie à la valeur la plus proche acceptée par le jeu : un multiple de 16 de 128 à 2032. Le plugin écrit un datapack au lancement du serveur (`plugins/Isohypse/datapack`) ; la hauteur ne s'applique qu'à un monde qui n'existe pas encore, et seulement au style `Realistic` (`Vanilla+` et `Fairy` gardent la hauteur vanilla) |
 | `structures.margin` | Blocs de plat en plus autour de chaque pièce d'un igloo, d'un avant-poste de pillards ou d'un camp abandonné (défaut 1, 0 à 16) |
 | `structures.blend_distance` | Distance en blocs sur laquelle le sol passe du plat au relief naturel autour de ces structures, en courbe douce (défaut 12, 0 = bord net, 48 au plus) |

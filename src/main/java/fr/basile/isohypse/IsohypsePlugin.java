@@ -192,7 +192,7 @@ public final class IsohypsePlugin extends JavaPlugin implements Listener {
                         + HeightScale.SETTINGS_FILE + "), nothing to download");
             } else {
                 new HeightMapGenerator(getLogger(), folder.toPath().resolve("dem-cache")).fetchSource(latitude, longitude, size,
-                        new File(folder, HeightMapGenerator.SOURCE_FILE));
+                        new File(folder, HeightMapGenerator.SOURCE_FILE), settings.swisstopo());
                 HeightScale.scale(folder, latitude, longitude, size, maxHeight, settings, getLogger());
             }
             terrainReady = true; // world.bin is made when the world is created, from these heights
@@ -224,7 +224,9 @@ public final class IsohypsePlugin extends JavaPlugin implements Listener {
                 c.getDouble("realistic.temp.river_bank_slope", d.riverBankSlope()),
                 c.getInt("realistic.temp.mushroom_island_size", d.mushroomIslandSize()),
                 c.getInt("realistic.temp.mushroom_island_spacing", d.mushroomIslandSpacing()),
-                c.getInt("realistic.temp.mushroom_island_height", d.mushroomIslandHeight()));
+                c.getInt("realistic.temp.mushroom_island_height", d.mushroomIslandHeight()),
+                c.getInt("realistic.temp.lake_blur", d.lakeBlur()),
+                c.getBoolean("realistic.swisstopo", d.swisstopo()));
     }
 
     /** Prints the real-world point (latitude, longitude) that the Realistic style puts at x=0, z=0. */

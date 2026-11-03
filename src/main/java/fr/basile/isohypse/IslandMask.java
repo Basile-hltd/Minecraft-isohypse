@@ -17,7 +17,7 @@ import java.util.stream.IntStream;
  * closer than {@code spacing} blocks to one already taken. Each island is a disc whose edge and height are moved by
  * noise from the seed: the coast is irregular, the relief rises from the sea floor to a peak a few blocks over the
  * sea, with small hills. The islands are a few discs in memory (and a coarse bit map to find them fast), nothing big.
- * The map repeats endlessly, so the islands wrap around it.
+ * The map does not wrap around; an island never touches its edge.
  */
 final class IslandMask {
 
@@ -106,7 +106,7 @@ final class IslandMask {
         for (int i = candidates.length - 1; i >= 0; i--) {
             int column = (int) (candidates[i] >> 21 & mask);
             int row = (int) (candidates[i] & mask);
-            // the map does not repeat in the game: an island at the edge would show up cut, and again at the opposite edge
+            // beyond the edge of the map there is only the void: an island at the edge would show up cut
             if (column < reach + 1 || column >= width - reach - 1 || row < reach + 1 || row >= height - reach - 1
                     || tooClose(column, row)) {
                 continue;
@@ -120,8 +120,8 @@ final class IslandMask {
 
     private boolean tooClose(int column, int row) {
         for (Island other : near(column, row)) {
-            long dc = wrap(column - other.column, width);
-            long dr = wrap(row - other.row, height);
+            long dc = column - other.column;
+            long dr = row - other.row;
             if (dc * dc + dr * dr < (long) spacing * spacing) {
                 return true;
             }
@@ -159,11 +159,6 @@ final class IslandMask {
         return found;
     }
 
-    /** The difference {@code d} of two positions on a map {@code size} wide, as the short way round. */
-    private static int wrap(int d, int size) {
-        return Math.floorMod(d + size / 2, size) - size / 2;
-    }
-
     /**
      * How far inside its island the column is: 1 in the middle, 0 at the edge (the coast moved by noise), negative
      * outside. {@code column} and {@code row} are the offsets from the middle of the island.
@@ -190,8 +185,8 @@ final class IslandMask {
         Island found = null;
         long nearest = Long.MAX_VALUE;
         for (Island island : near(column, row)) {
-            long dc = wrap(column - island.column, width);
-            long dr = wrap(row - island.row, height);
+            long dc = column - island.column;
+            long dr = row - island.row;
             long distance = dc * dc + dr * dr;
             if (distance <= (long) reach * reach && distance < nearest) {
                 nearest = distance;

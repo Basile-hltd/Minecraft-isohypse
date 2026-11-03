@@ -30,15 +30,20 @@ import java.util.Locale;
  * from any land in every direction; 0 for none, else at least 64
  * @param mushroomIslandSpacing the least distance, in blocks, between the middles of two mushroom islands
  * @param mushroomIslandHeight blocks over the sea level of the highest point of a mushroom island
+ * @param lakeBlur about the standard deviation, in blocks, of the blur of the lakes of the intermediate map, which also
+ * smooths the stripes the height map leaves in their outline; 0 for none
+ * @param swisstopo whether the swisstopo altitudes are used where they cover the area (else Terrarium everywhere); part of
+ * the parameters of {@code heightmap.bin}, not of the intermediate map
  */
 record TerrainSettings(int oceanDepth, int beachDepth, int beachHeight, int beachInlandDistance, int oceanBlur, int landBlur, double warmOceanShare,
                        double normalOceanShare, double warmLandShare, double normalLandShare, int lakeMinSize, int lakeSmoothing,
                        int riverClimb, int riverWidth, int riverLakeSnap,
                        int riverDepth, int riverBankReach, double riverBankSlope,
-                       int mushroomIslandSize, int mushroomIslandSpacing, int mushroomIslandHeight) {
+                       int mushroomIslandSize, int mushroomIslandSpacing, int mushroomIslandHeight,
+                       int lakeBlur, boolean swisstopo) {
 
     static final TerrainSettings DEFAULTS = new TerrainSettings(30, 3, 5, 20, 150, 50,
-            1.0 / 3, 1.0 / 3, 0.35, 0.45, 50, 2, 3, 3, 10, 3, 16, 1.0, 300, 3000, 14);
+            1.0 / 3, 1.0 / 3, 0.35, 0.45, 50, 2, 3, 3, 10, 3, 16, 1.0, 300, 3000, 14, 4, true);
 
     TerrainSettings {
         require(oceanDepth >= 0, "ocean_depth must be 0 or more");
@@ -54,6 +59,7 @@ record TerrainSettings(int oceanDepth, int beachDepth, int beachHeight, int beac
         require(mushroomIslandSize == 0 || mushroomIslandSize >= 64, "mushroom_island_size must be 0 or at least 64");
         require(mushroomIslandSpacing >= 2 * mushroomIslandSize,
                 "mushroom_island_spacing must be at least twice mushroom_island_size");
+        require(lakeBlur >= 0, "lake_blur must be 0 or more");
         require(mushroomIslandHeight >= 1, "mushroom_island_height must be 1 or more");
         require(warmOceanShare >= 0 && normalOceanShare >= 0 && warmOceanShare + normalOceanShare <= 1,
                 "warm_ocean_share and normal_ocean_share: 0 or more, 1 at most together");
@@ -90,7 +96,7 @@ record TerrainSettings(int oceanDepth, int beachDepth, int beachHeight, int beac
                 + line("river_depth", riverDepth) + line("river_bank_reach", riverBankReach)
                 + line("river_bank_slope", riverBankSlope) + line("mushroom_island_size", mushroomIslandSize)
                 + line("mushroom_island_spacing", mushroomIslandSpacing)
-                + lineLast("mushroom_island_height", mushroomIslandHeight) + "  }";
+                + line("mushroom_island_height", mushroomIslandHeight) + lineLast("lake_blur", lakeBlur) + "  }";
     }
 
     static String line(String key, Number value) {

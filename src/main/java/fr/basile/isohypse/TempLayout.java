@@ -57,7 +57,8 @@ final class TempLayout implements AutoCloseable {
             }, settings.landBlur(), dir, logger, "flou de la terre");
             // The lakes come last: the flats of the height map, over the zones above, but never in what is already the sea
             // of the map (up to the sea level).
-            lakes = new LakeMask(data, settings.lakeMinSize(), settings.lakeSmoothing(), seaLevel, dir, logger, "lacs");
+            lakes = new LakeMask(data, settings.lakeMinSize(), settings.lakeSmoothing(), settings.lakeBlur(), seaLevel, dir, logger,
+                    "lacs");
             // The rivers leave the lakes and follow the relief down, to a lower lake, the sea or another river.
             rivers = new RiverMask(data, lakes, settings.riverClimb(), settings.riverWidth(), settings.riverLakeSnap(),
                     seaLevel, dir, logger, "rivières");
