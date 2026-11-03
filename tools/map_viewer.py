@@ -48,6 +48,8 @@ WORLD_MAGIC = 0x49534F57
 WORLD_VERSION = 1
 DTYPES = {1: "u1", 2: ">i2"}   # type codes of WorldFile.java
 MAX_SCALE = 16.0
+BAND_ROWS = 256       # rows of the picture shaded at once, so that a big map never needs much RAM
+MARGIN = 0.25         # the picture is made this much bigger than the view on each side, so that small pans reuse it
 DOT_RADIUS = 5      # screen pixels, a structure
 HOVER_RADIUS = 9    # screen pixels: a structure closer than this to the mouse is named in the status bar
 CAVE_DEPTH, CAVE_SEA_MARGIN, DEEP_DARK_Y = 8, 8, -24   # the rules of the caves of BiomeLayout.java
@@ -151,7 +153,10 @@ class Layer:
         """How many cells hold each value (256 numbers)."""
         data = self._map(path)
         try:
-            return np.bincount(np.array(data).ravel(), minlength=256)
+            total = np.zeros(256, dtype=np.int64)
+            for row in range(0, self.rows, BAND_ROWS):   # a band at a time: the whole layer is never in RAM
+                total += np.bincount(np.array(data[row:row + BAND_ROWS]).ravel(), minlength=256)
+            return total
         finally:
             del data
 
@@ -256,7 +261,10 @@ class Viewer:
         self.image_id = None
         self.drag = None
         self.fitted = False
-        self.master = None          # the whole map rendered once, in RAM (a PIL image); the view crops and scales it
+        self.master = None          # the part of the map around the view, rendered in RAM (a PIL image); the view crops and scales it
+        self.master_box = None      # its blocks (x0, y0, x1, y1) and how many blocks one of its pixels is wide
+        self.master_skip = 1
+        self.master_stale = False   # a display setting changed: the master is redone, the old one kept if that fails
         self._pending = None        # the scheduled redraw, so a burst of drag or zoom events makes at most one redraw
         self._master_dirty = False  # a display setting changed: the master must be rebuilt before the next draw
 
@@ -643,50 +651,71 @@ class Viewer:
         alpha = opacity / 100
         return np.where(shown[ids][..., None], (1 - alpha) * rgb + alpha * lut[ids], rgb)
 
-    def render_master(self):
-        """Render the whole map once, in RAM, from world.bin and the current display settings. The view then only crops
-        and scales this image (draw), so panning and zooming never read the disk nor recolour anything. Kept on failure
+    def render_master(self, box, skip):
+        """Render the blocks of `box` (x0, y0, x1, y1), one pixel per `skip` blocks, in RAM, from world.bin and the current
+        display settings; only that part of the map, a band of rows at a time, so that a big map never needs much memory.
+        The view then crops and scales this image (draw): panning inside it and small zooms read nothing. Kept on failure
         (e.g. the server is writing a new world): the old master stays and a message is shown."""
-        try:
-            sub = self.layers["height"].region(self.path, 0, self.height, 0, self.width, 1).astype(np.float32)
-        except (OSError, ValueError) as e:
-            self.status.set(f"carte illisible pour le moment ({e}), essayer Recharger")
+        x0, y0, x1, y1 = box
+        out = np.zeros((len(range(y0, y1, skip)), len(range(x0, x1, skip)), 3), dtype=np.uint8)
+        zone_ids = self.show_zones.get() and self.zones
+        layer = self.current_layer() if self.show_biomes.get() else None
+        for r0 in range(y0, y1, BAND_ROWS * skip):
+            r1 = min(y1, r0 + BAND_ROWS * skip)
+            try:
+                sub = self.layers["height"].region(self.path, r0, r1, x0, x1, skip).astype(np.float32)
+            except (OSError, ValueError) as e:
+                self.status.set(f"carte illisible pour le moment ({e}), essayer Recharger")
+                return
+            if self.show_sea.get():
+                # land stretched from the sea level to the highest point, the sea in blue from light (shallow) to dark (deep)
+                span = max(1, self.highest - self.sea_level)
+                land = np.clip((sub - self.sea_level) / span, 0, 1) * 255
+                depth = np.clip((self.sea_level - sub) / max(1, self.sea_level - self.lowest), 0, 1)[..., None]
+                sea = (1 - depth) * SEA_LIGHT + depth * SEA_DARK
+                rgb = np.where((sub < self.sea_level)[..., None], sea, np.repeat(land[..., None], 3, axis=2))
+            else:
+                grey = np.clip((sub - self.lowest) / max(1, self.highest - self.lowest), 0, 1) * 255
+                rgb = np.repeat(grey[..., None], 3, axis=2)
+            try:
+                if zone_ids:
+                    ids = self.layers["temp"].region(self.path, r0, r1, x0, x1, skip)
+                    if ids.shape == sub.shape:
+                        rgb = self.overlay(rgb, ids, self.zone_lut, [v.get() for v in self.zone_vars], self.zone_opacity.get())
+                if layer:
+                    ids = self.layers[layer].region(self.path, r0, r1, x0, x1, skip)
+                    if ids.shape == sub.shape:
+                        rgb = self.overlay(rgb, ids, self.biome_lut, [self.biome_vars[n].get() for n in self.biome_names],
+                                           self.biome_opacity.get())
+            except (OSError, ValueError):
+                pass  # a layer that cannot be read for now: the map without it
+            first = (r0 - y0) // skip
+            out[first:first + sub.shape[0]] = rgb.astype(np.uint8)
+        self.master = Image.fromarray(out)
+        self.master_box = (x0, y0, x1, y1)
+        self.master_skip = skip
+        self.master_stale = False
+
+    def ensure_master(self, vx0, vy0, vx1, vy1):
+        """Make sure the master covers the visible blocks at about the resolution of the canvas: if not (a display setting
+        changed, the view left it or was zoomed), render the view with a margin around it."""
+        skip = max(1, round(1 / self.scale))
+        box = self.master_box
+        if (self.master is not None and box is not None and self.master_skip == skip and not self.master_stale
+                and box[0] <= vx0 and box[1] <= vy0 and box[2] >= vx1 and box[3] >= vy1):
             return
-
-        if self.show_sea.get():
-            # land stretched from the sea level to the highest point, the sea in blue from light (shallow) to dark (deep)
-            span = max(1, self.highest - self.sea_level)
-            land = np.clip((sub - self.sea_level) / span, 0, 1) * 255
-            depth = np.clip((self.sea_level - sub) / max(1, self.sea_level - self.lowest), 0, 1)[..., None]
-            sea = (1 - depth) * SEA_LIGHT + depth * SEA_DARK
-            rgb = np.where((sub < self.sea_level)[..., None], sea, np.repeat(land[..., None], 3, axis=2))
-        else:
-            grey = np.clip((sub - self.lowest) / max(1, self.highest - self.lowest), 0, 1) * 255
-            rgb = np.repeat(grey[..., None], 3, axis=2)
-
-        try:
-            if self.show_zones.get() and self.zones:
-                ids = self.layers["temp"].region(self.path, 0, self.height, 0, self.width, 1)
-                if ids.shape == sub.shape:
-                    rgb = self.overlay(rgb, ids, self.zone_lut, [v.get() for v in self.zone_vars], self.zone_opacity.get())
-            layer = self.current_layer()
-            if self.show_biomes.get() and layer:
-                ids = self.layers[layer].region(self.path, 0, self.height, 0, self.width, 1)
-                if ids.shape == sub.shape:
-                    rgb = self.overlay(rgb, ids, self.biome_lut, [self.biome_vars[n].get() for n in self.biome_names],
-                                       self.biome_opacity.get())
-        except (OSError, ValueError):
-            pass  # a layer that cannot be read for now: the map without it
-
-        self.master = Image.fromarray(rgb.astype(np.uint8))
+        mx, my = (vx1 - vx0) * MARGIN, (vy1 - vy0) * MARGIN
+        x0 = max(0, int((vx0 - mx) // skip) * skip)
+        y0 = max(0, int((vy0 - my) // skip) * skip)
+        x1 = min(self.width, int(vx1 + mx) + skip)
+        y1 = min(self.height, int(vy1 + my) + skip)
+        self.render_master((x0, y0, x1, y1), skip)
 
     def draw(self):
-        """Show the visible part of the master, scaled to the canvas, then the structures over it. Cheap: one scale of
-        the RAM image (its visible box, straight to canvas size) into a single picture, no disk and no recolouring."""
+        """Show the visible part of the master, scaled to the canvas, then the structures over it. Cheap
+        while the view stays in the master: one scale of the RAM image (its visible box, straight to canvas size)."""
         self.canvas.delete("all")
         self.image_id = None
-        if self.master is None:
-            return
         cw, ch = self.canvas.winfo_width(), self.canvas.winfo_height()
         if cw <= 1 or ch <= 1:
             return
@@ -695,8 +724,14 @@ class Viewer:
         vy1 = min(self.height, self.oy + ch / self.scale)
         if vx1 <= vx0 or vy1 <= vy0:
             return  # the map is off the canvas
+        self.ensure_master(vx0, vy0, vx1, vy1)
+        box = self.master_box
+        if self.master is None or box is None or not (box[0] <= vx0 and box[1] <= vy0 and box[2] >= vx1 and box[3] >= vy1):
+            return  # nothing to show yet (or the new picture could not be made)
+        mx0, my0 = box[0], box[1]
+        s = self.master_skip
         size = (max(1, round((vx1 - vx0) * self.scale)), max(1, round((vy1 - vy0) * self.scale)))
-        view = self.master.resize(size, Image.NEAREST, box=(vx0, vy0, vx1, vy1))
+        view = self.master.resize(size, Image.NEAREST, box=((vx0 - mx0) / s, (vy0 - my0) / s, (vx1 - mx0) / s, (vy1 - my0) / s))
         self.photo = ImageTk.PhotoImage(view)
         self.image_id = self.canvas.create_image(round((vx0 - self.ox) * self.scale), round((vy0 - self.oy) * self.scale),
                                                   image=self.photo, anchor="nw")
@@ -722,7 +757,7 @@ class Viewer:
         self._pending = None
         if self._master_dirty:
             self._master_dirty = False
-            self.render_master()
+            self.master_stale = True   # redone for the view by draw
         self.draw()
 
     def redraw(self):

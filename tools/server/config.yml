@@ -1,8 +1,9 @@
 # Style Realistic : point du monde réel placé au centre du monde (x=0, z=0, le spawn).
 realistic: 
-  latitude: 46.160917   # degrés, de -90 (sud) à 90 (nord)
-  longitude: 6.923270   # degrés, de -180 (ouest) à 180 (est)
-  size: 100000          # côté en mètres de la zone réelle récupérée ; la carte finale est mise à l'échelle (voir README)
+  latitude: 42.212054   # degrés, de -90 (sud) à 90 (nord)
+  longitude: 9.250145   # degrés, de -180 (ouest) à 180 (est)
+  size: 200000          # côté en mètres de la zone réelle récupérée ; la carte finale est mise à l'échelle (voir README)
+  swisstopo: false       # true : altitudes swisstopo (swissALTI3D, très précises) là où elles couvrent la zone (Suisse), Terrarium ailleurs ; false : Terrarium partout. Le changer refait la height map et retélécharge les tuiles
 
   # Mise à l'échelle des altitudes réelles en hauteurs de blocs (heightmap.bin) : un seul facteur, le point le plus haut au plafond. Les changer refait la height map et retélécharge les tuiles.
   scale:
@@ -28,15 +29,16 @@ realistic:
     normal_land_share: 0.45    # ...en normal ; le reste est cold (les plus hautes)
     lake_min_size: 50          # un plat (colonnes exactement à la même hauteur) d'au moins tant de blocs de large et de haut est un lac ; 0 : aucun
     lake_smoothing: 20          # rayon (blocs) du filtre qui arrondit les angles des lacs (ne change que les bords) ; 0 : aucun
+    lake_blur: 0               # blocs, à peu près l'écart type du flou des lacs (comme ocean_blur et land_blur), qui lisse aussi les stries du contour ; 0 : aucun
     river_climb: 3             # une rivière part d'un lac et descend le relief ; elle passe un col jusqu'à tant de blocs au-dessus de son niveau (le creuseur le coupe), sinon elle s'arrête
     river_width: 10             # largeur (blocs) d'une rivière à une source, elle grandit à chaque confluence ; 0 : aucune rivière
     river_lake_snap: 20        # une rivière qui passe à tant de blocs ou moins d'un lac s'y connecte et s'arrête là ; 0 : aucun
     river_depth: 3             # profondeur (blocs) de l'eau au milieu du lit d'une rivière (1 sur les bords du lit) ; 1 au minimum
     river_bank_reach: 16       # distance (blocs) autour d'une rivière sur laquelle le sol est abaissé en berge, avec un fondu jusqu'au terrain ; 0 : pas de berge
     river_bank_slope: 1.0      # blocs dont la berge monte par bloc depuis la rivière (1 : pente normale, moins : plus douce) ; plus que 0
-    mushroom_island_size: 300     # une île champignon de tant de blocs de large est posée partout où la mer est à au moins tant de blocs de toute terre dans chaque direction ; 0 : aucune, sinon 64 au minimum
-    mushroom_island_spacing: 3000 # distance minimale (blocs) entre les milieux de deux îles champignon ; au moins le double de la taille
-    mushroom_island_height: 14    # hauteur (blocs) du point le plus haut d'une île champignon au-dessus du niveau de la mer
+    mushroom_island_size: 1000     # une île champignon de tant de blocs de large est posée partout où la mer est à au moins tant de blocs de toute terre dans chaque direction ; 0 : aucune, sinon 64 au minimum
+    mushroom_island_spacing: 20000 # distance minimale (blocs) entre les milieux de deux îles champignon ; au moins le double de la taille
+    mushroom_island_height: 50    # hauteur (blocs) du point le plus haut d'une île champignon au-dessus du niveau de la mer
 
 # Monde : hauteur maximale de l'overworld (le sol reste à y=-64). Arrondie à la valeur la plus proche acceptée par le jeu :
 # un multiple de 16 de 128 à 2032 ; 320 est la valeur de Minecraft (rien n'est changé). Ne s'applique qu'à un monde qui

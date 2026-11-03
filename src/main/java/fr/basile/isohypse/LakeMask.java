@@ -3,7 +3,10 @@ package fr.basile.isohypse;
 import java.io.File;
 import java.io.IOException;
 import java.lang.foreign.MemorySegment;
+import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
+import java.util.List;
 import java.util.logging.Logger;
 import java.util.stream.IntStream;
 
@@ -52,10 +55,11 @@ final class LakeMask implements AutoCloseable {
     /**
      * @param minSize the least width and height, in columns, of a flat; 0 for no lake at all
      * @param smoothing the radius of the filter that rounds the corners of the lakes, see {@link #smooth}; 0 for none
+     * @param blur about the standard deviation of the blur of the lakes that follows, see {@link #blur}; 0 for none
      * @param excludeUpTo the columns at or under this height are never a lake (the sea level: what is not above it is already sea)
      */
-    LakeMask(HeightMapData data, int minSize, int smoothing, int excludeUpTo, File dir, Logger logger, String label)
-            throws IOException {
+    LakeMask(HeightMapData data, int minSize, int smoothing, int blur, int excludeUpTo, File dir, Logger logger,
+             String label) throws IOException {
         this.width = data.width();
         this.height = data.height();
         this.bitsFile = MappedFile.scratch(dir, ((long) width * height + 7) / 8);
@@ -64,14 +68,14 @@ final class LakeMask implements AutoCloseable {
             return;
         }
         try {
-            find(data, minSize, smoothing, excludeUpTo, dir, logger, label);
+            find(data, minSize, smoothing, blur, excludeUpTo, dir, logger, label);
         } catch (IOException | RuntimeException | Error e) {
             bitsFile.close();
             throw e;
         }
     }
 
-    private void find(HeightMapData data, int minSize, int smoothing, int excludeUpTo, File dir, Logger logger,
+    private void find(HeightMapData data, int minSize, int smoothing, int blur, int excludeUpTo, File dir, Logger logger,
                       String label) throws IOException {
         Progress progress = new Progress(logger, label, height);
         int blocks = (height + ROW_BLOCK - 1) / ROW_BLOCK;
@@ -168,6 +172,13 @@ final class LakeMask implements AutoCloseable {
         if (smoothing > 0 && columns > 0) {
             columns = smooth(data, smoothing, excludeUpTo, lakeRows, dir);
         }
+        if (blur > 0 && columns > 0) {
+            columns = blur(data, blur, excludeUpTo, dir, logger, label + " (flou)");
+        }
+        if (columns > 0) {
+            long removed = separate(data, logger, label + " (séparation)");
+            columns -= removed;
+        }
         logger.info("lacs : " + lakes + " plat(s) d'au moins " + minSize + " x " + minSize + " blocs à la même hauteur ("
                 + runs.size + " segments plats examinés), " + columns + " colonnes");
     }
@@ -223,6 +234,216 @@ final class LakeMask implements AutoCloseable {
         bitsFile = smoothFile;
         bits = out;
         return columns;
+    }
+
+    /**
+     * Blurs the lakes like the sea and the land ({@link HeightSmoothing}: three box blurs, close to a gaussian, about
+     * {@code sigma} blocks), which is rounder and has no square grain, unlike the window of {@link #smooth}: the mask
+     * (1 for a lake column, 0 elsewhere) is blurred, and a column is a lake when the result is over a half. Only
+     * columns at the height of a lake column next to them are added, so that a lake keeps one water level; the
+     * specks and the stripes the height map leaves in the outline are cut or filled. The lakes are few, so only the tiles
+     * of the map with a lake in or near them are blurred (in the heap, a tile and the margin the blur reaches at a
+     * time), not the whole map. Returns the number of columns.
+     */
+    private long blur(HeightMapData data, int sigma, int excludeUpTo, File dir, Logger logger, String label)
+            throws IOException {
+        long started = System.nanoTime();
+        int half = Math.max(1, sigma);
+        int reach = 3 * half; // three boxes: how far a column changes another
+        int tilesAcross = (width + BLUR_TILE - 1) / BLUR_TILE;
+        int tilesDown = (height + BLUR_TILE - 1) / BLUR_TILE;
+        // the tiles that hold a lake column
+        boolean[] hasLake = new boolean[tilesAcross * tilesDown];
+        IntStream.range(0, tilesDown).parallel().forEach(tileRow -> {
+            long first = (long) tileRow * BLUR_TILE * width;
+            long last = Math.min((long) height, (long) (tileRow + 1) * BLUR_TILE) * width - 1;
+            for (long byteIndex = first >> 3; byteIndex <= last >> 3; byteIndex++) {
+                byte value = bits.get(MappedFile.BYTE, byteIndex);
+                for (int bit = 0; value != 0 && bit < 8; bit++) {
+                    long index = byteIndex * 8 + bit;
+                    if ((value >> bit & 1) != 0 && index >= first && index <= last) {
+                        hasLake[(int) (index / width / BLUR_TILE) * tilesAcross + (int) (index % width) / BLUR_TILE] = true;
+                    }
+                }
+            }
+        });
+        int ring = (reach + BLUR_TILE - 1) / BLUR_TILE;
+        List<long[]> found = Collections.synchronizedList(new ArrayList<>());
+        IntStream.range(0, tilesAcross * tilesDown).parallel().forEach(tile -> {
+            int tileColumn = tile % tilesAcross;
+            int tileRow = tile / tilesAcross;
+            boolean near = false;
+            for (int r = Math.max(0, tileRow - ring); r <= Math.min(tilesDown - 1, tileRow + ring) && !near; r++) {
+                for (int c = Math.max(0, tileColumn - ring); c <= Math.min(tilesAcross - 1, tileColumn + ring) && !near; c++) {
+                    near = hasLake[r * tilesAcross + c];
+                }
+            }
+            if (near) {
+                found.add(blurTile(data, tileColumn, tileRow, half, reach, excludeUpTo));
+            }
+        });
+        MappedFile blurredFile = MappedFile.scratch(dir, ((long) width * height + 7) / 8);
+        MemorySegment out = blurredFile.segment();
+        long columns = 0;
+        for (long[] indexes : found) {
+            for (long index : indexes) {
+                out.set(MappedFile.BYTE, index >> 3, (byte) (out.get(MappedFile.BYTE, index >> 3) | 1 << (index & 7)));
+            }
+            columns += indexes.length;
+        }
+        bitsFile.close();
+        bitsFile = blurredFile;
+        bits = out;
+        logger.info(label + " : " + found.size() + " tuile(s) de " + BLUR_TILE + " x " + BLUR_TILE + " blocs floutée(s) sur "
+                + tilesAcross * tilesDown + ", " + columns + " colonnes (" + (System.nanoTime() - started) / 1_000_000 + " ms)");
+        return columns;
+    }
+
+    /**
+     * Keeps two lakes of different heights apart. A lake has one water level, but the smoothing and the blur round the
+     * outlines, and two lakes close to each other can touch or merge into one blob of two heights, whose water would
+     * step from one level to the other. Every lake column that has a lake column of another height among its 8
+     * neighbours is taken out of the lake (on both sides, so at least two columns of land are left between them): the
+     * lakes stay apart, each at its own level, and the rivers ({@link RiverMask}) join them, from the outlet of the higher
+     * one down. Returns the number of columns taken out.
+     */
+    private long separate(HeightMapData data, Logger logger, String label) {
+        int tilesDown = (height + BLUR_TILE - 1) / BLUR_TILE;
+        List<long[]> clashes = Collections.synchronizedList(new ArrayList<>());
+        IntStream.range(0, tilesDown).parallel().forEach(tileRow -> {
+            long first = (long) tileRow * BLUR_TILE * width;
+            long last = Math.min((long) height, (long) (tileRow + 1) * BLUR_TILE) * width - 1;
+            long[] found = new long[16];
+            int size = 0;
+            for (long byteIndex = first >> 3; byteIndex <= last >> 3; byteIndex++) {
+                byte value = bits.get(MappedFile.BYTE, byteIndex);
+                for (int bit = 0; value != 0 && bit < 8; bit++) {
+                    long index = byteIndex * 8 + bit;
+                    if ((value >> bit & 1) == 0 || index < first || index > last) {
+                        continue;
+                    }
+                    int row = (int) (index / width);
+                    int column = (int) (index % width);
+                    if (touchesAnotherLevel(data, row, column)) {
+                        if (size == found.length) {
+                            found = Arrays.copyOf(found, size * 2);
+                        }
+                        found[size++] = index;
+                    }
+                }
+            }
+            clashes.add(Arrays.copyOf(found, size));
+        });
+        long removed = 0;
+        for (long[] indexes : clashes) {
+            for (long index : indexes) {
+                bits.set(MappedFile.BYTE, index >> 3, (byte) (bits.get(MappedFile.BYTE, index >> 3) & ~(1 << (index & 7))));
+            }
+            removed += indexes.length;
+        }
+        logger.info(label + " : " + removed + " colonne(s) retirée(s) là où deux lacs de hauteurs différentes se touchent");
+        return removed;
+    }
+
+    /** Whether a lake column has, among its 8 neighbours, a lake column of another height. */
+    private boolean touchesAnotherLevel(HeightMapData data, int row, int column) {
+        int value = data.valueAt(column, row);
+        for (int dz = -1; dz <= 1; dz++) {
+            for (int dx = -1; dx <= 1; dx++) {
+                int r = row + dz;
+                int c = column + dx;
+                if ((dx != 0 || dz != 0) && r >= 0 && r < height && c >= 0 && c < width && bit(r, c)
+                        && data.valueAt(c, r) != value) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    /** The side, in blocks, of the tiles that {@link #blur} works on. */
+    private static final int BLUR_TILE = 256;
+
+    /**
+     * The columns of a tile that are a lake once blurred (the tile with the margin the blur reaches, clipped to the map,
+     * is blurred in the heap), as their index in the map.
+     */
+    private long[] blurTile(HeightMapData data, int tileColumn, int tileRow, int half, int reach, int excludeUpTo) {
+        int column0 = tileColumn * BLUR_TILE;
+        int row0 = tileRow * BLUR_TILE;
+        int column1 = Math.min(width, column0 + BLUR_TILE);
+        int row1 = Math.min(height, row0 + BLUR_TILE);
+        int from = Math.max(0, column0 - reach);
+        int to = Math.min(width, column1 + reach);
+        int top = Math.max(0, row0 - reach);
+        int bottom = Math.min(height, row1 + reach);
+        int w = to - from;
+        int h = bottom - top;
+        float[] lake = new float[w * h];
+        float[] inside = new float[w * h]; // 1 on the map: the weight, so that the edge of the map does not pull the blur down
+        for (int r = 0; r < h; r++) {
+            for (int c = 0; c < w; c++) {
+                lake[r * w + c] = bit(top + r, from + c) ? 1f : 0f;
+                inside[r * w + c] = 1f;
+            }
+        }
+        blurAll(lake, w, h, half);
+        blurAll(inside, w, h, half);
+        long[] kept = new long[16];
+        int size = 0;
+        for (int row = row0; row < row1; row++) {
+            for (int column = column0; column < column1; column++) {
+                int i = (row - top) * w + column - from;
+                if (lake[i] / inside[i] <= 0.5f) {
+                    continue;
+                }
+                if (!bit(row, column) && !joinsALake(data, row, column, excludeUpTo)) {
+                    continue;
+                }
+                if (size == kept.length) {
+                    kept = Arrays.copyOf(kept, size * 2);
+                }
+                kept[size++] = (long) row * width + column;
+            }
+        }
+        return Arrays.copyOf(kept, size);
+    }
+
+    /** Three box blurs of half-width {@code half} along the rows, then along the columns, in place; nothing beyond the edges. */
+    private static void blurAll(float[] values, int w, int h, int half) {
+        double[] line = new double[Math.max(w, h)];
+        double[] prefix = new double[Math.max(w, h) + 1];
+        for (int r = 0; r < h; r++) {
+            for (int c = 0; c < w; c++) {
+                line[c] = values[r * w + c];
+            }
+            boxes(line, w, half, prefix);
+            for (int c = 0; c < w; c++) {
+                values[r * w + c] = (float) line[c];
+            }
+        }
+        for (int c = 0; c < w; c++) {
+            for (int r = 0; r < h; r++) {
+                line[r] = values[r * w + c];
+            }
+            boxes(line, h, half, prefix);
+            for (int r = 0; r < h; r++) {
+                values[r * w + c] = (float) line[r];
+            }
+        }
+    }
+
+    private static void boxes(double[] line, int n, int half, double[] prefix) {
+        double box = 2 * half + 1;
+        for (int pass = 0; pass < 3; pass++) {
+            prefix[0] = 0;
+            for (int i = 0; i < n; i++) {
+                prefix[i + 1] = prefix[i] + line[i];
+            }
+            for (int i = 0; i < n; i++) {
+                line[i] = (prefix[Math.min(n, i + half + 1)] - prefix[Math.max(0, i - half)]) / box;
+            }
+        }
     }
 
     /** Adds ({@code sign} 1) or removes (-1) the lake columns of a row, counted within {@code radius} of each column. */

@@ -357,24 +357,33 @@ final class HeightScale {
     private record BuildRelief(HeightMapData data, LakeMask lakes, RiverMask rivers, IslandMask islands)
             implements Relief {
 
-        @Override
-        public int islandTopAt(int x, int z) {
-            return islands.isEmpty() ? IslandMask.NO_TOP : islands.topAt(x, z, data.heightAt(x, z));
+        /** Whether the column is on the map: the map does not repeat, what is beyond its edges is the void. */
+        private boolean inside(int x, int z) {
+            int column = x + data.width() / 2;
+            int row = z + data.height() / 2;
+            return column >= 0 && column < data.width() && row >= 0 && row < data.height();
         }
 
         @Override
+        public int islandTopAt(int x, int z) {
+            return islands.isEmpty() || !inside(x, z) ? IslandMask.NO_TOP : islands.topAt(x, z, heightAt(x, z));
+        }
+
+        /** The height of the column, that of the nearest column of the map beyond its edges (they do not wrap around). */
+        @Override
         public int heightAt(int x, int z) {
-            return data.heightAt(x, z);
+            return data.valueAt(Math.clamp(x + data.width() / 2, 0, data.width() - 1),
+                    Math.clamp(z + data.height() / 2, 0, data.height() - 1));
         }
 
         @Override
         public boolean lakeAt(int x, int z) {
-            return lakes.contains(x, z);
+            return inside(x, z) && lakes.contains(x, z);
         }
 
         @Override
         public boolean riverAt(int x, int z) {
-            return rivers.contains(x, z);
+            return inside(x, z) && rivers.contains(x, z);
         }
 
         @Override
@@ -411,7 +420,11 @@ final class HeightScale {
              MappedFile waterMap = MappedFile.writable(file, waterLayer.offset(), waterLayer.bytes())) {
             MemorySegment segment = map.segment();
             MemorySegment waterSegment = waterMap.segment();
-            for (int row0 = 0; row0 < height; row0 += tile) {
+            // The tiles are independent (each reads the raw heights and the masks, writes its own columns): one band of
+            // tiles per thread, in parallel.
+            Progress progress = new Progress(logger, "lacs et rivières creusés", (height + tile - 1) / tile);
+            IntStream.range(0, (height + tile - 1) / tile).parallel().forEach(band -> {
+                int row0 = band * tile;
                 int rows = Math.min(tile, height - row0);
                 for (int col0 = 0; col0 < width; col0 += tile) {
                     int cols = Math.min(tile, width - col0);
@@ -427,7 +440,8 @@ final class HeightScale {
                         }
                     }
                 }
-            }
+                progress.advance(1);
+            });
         }
         logger.info("lacs et rivières creusés et remplis dans world.bin : " + millis(started) + " ms");
     }
@@ -484,7 +498,10 @@ final class HeightScale {
         return "  \"format\": " + FORMAT + ",\n"
                 + "  \"source\": {\n"
                 + line("latitude", lat, true) + line("longitude", lon, true) + line("size_m", size, true)
-                + line("step_m", step, true) + line("samples_per_side", samples, false)
+                + line("step_m", step, true)
+                // written only when swisstopo is off, so that the maps made with it (the default) stay up to date
+                + (settings.swisstopo() ? "" : "    \"swisstopo\": false,\n")
+                + line("samples_per_side", samples, false)
                 + "  },\n  \"world\": {\n"
                 + line("max_height", maxHeight, true) + line("top_y", topY, true) + line("sea_level", SEA_LEVEL, true)
                 + line("ocean_depth", settings.oceanDepth(), true)

@@ -29,7 +29,7 @@ import java.util.regex.Pattern;
  *
  * <p>Sources: swisstopo swissALTI3D (Switzerland, 0.5 m, or 2 m when the area is sampled less often than every metre),
  * used wherever it covers the area whatever its size, AWS Terrain Tiles / Terrarium (whole world, ~30 m) where swisstopo
- * has no data. North is up (negative z).
+ * has no data (swisstopo can be turned off: Terrarium everywhere). North is up (negative z).
  */
 public final class HeightMapGenerator {
 
@@ -71,8 +71,9 @@ public final class HeightMapGenerator {
      *
      * @param size side in metres of the real area (1 sample per metre, or per few metres beyond {@link #MAX_SAMPLES}
      *             samples per side)
+     * @param swisstopo whether swisstopo swissALTI3D is used where it covers the area; if not, Terrarium is used everywhere
      */
-    public void fetchSource(double lat, double lon, int size, File sourceFile) throws Exception {
+    public void fetchSource(double lat, double lon, int size, File sourceFile, boolean swisstopo) throws Exception {
         if (sourceFile.exists()) {
             double fileLat;
             double fileLon;
@@ -100,7 +101,7 @@ public final class HeightMapGenerator {
         if (Math.abs(lat) > 85) {
             throw new IllegalArgumentException("Latitude hors de la couverture (±85°)");
         }
-        Source source = fetch(lat, lon, size);
+        Source source = fetch(lat, lon, size, swisstopo);
         writeSource(sourceFile, source);
         logger.info(sourceFile.getAbsolutePath() + " : altitudes réelles enregistrées (zone de " + size + " m, "
                 + String.format(Locale.ROOT, "%.1f à %.1f m", source.min, source.max) + ")");
@@ -130,7 +131,7 @@ public final class HeightMapGenerator {
     }
 
     /** Step 1: fetches the real altitudes, one sample every r metres (r = 1 unless the area is very big). */
-    private Source fetch(double lat, double lon, int size) throws Exception {
+    private Source fetch(double lat, double lon, int size, boolean swisstopo) throws Exception {
         int r = stepFor(size);
         int n = samplesFor(size);
         double areaM = (double) n * r;
@@ -139,7 +140,10 @@ public final class HeightMapGenerator {
         }
         double cosLat = Math.cos(Math.toRadians(lat));
         // swissALTI3D wherever it covers the area, however big (0.5 m tiles for 1 sample per metre, 2 m beyond).
-        Swiss swiss = new Swiss(lat, lon, areaM / 2.0, r <= 1 ? 0.5 : 2.0);
+        Swiss swiss = swisstopo ? new Swiss(lat, lon, areaM / 2.0, r <= 1 ? 0.5 : 2.0) : null;
+        if (swiss == null) {
+            logger.info("swisstopo désactivé (realistic.swisstopo) : Terrarium partout");
+        }
         Terrarium terrarium = new Terrarium(lat, r);
         float[] altitude = new float[n * n];
         double min = Double.MAX_VALUE;
@@ -149,9 +153,9 @@ public final class HeightMapGenerator {
             for (int i = 0; i < n; i++) {
                 double east = (i - n / 2.0 + 0.5) * r;
                 double north = -(j - n / 2.0 + 0.5) * r;
-                double elevation = swiss.elevation(east, north);
+                double elevation = swiss != null ? swiss.elevation(east, north) : Double.NaN;
                 if (Double.isNaN(elevation)) {
-                    fallback++;
+                    fallback += swiss != null ? 1 : 0;
                     elevation = terrarium.elevation(lat + north / M_PER_DEG_LAT,
                             lon + east / (M_PER_DEG_LAT * cosLat));
                 }
