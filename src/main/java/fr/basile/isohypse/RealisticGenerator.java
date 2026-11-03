@@ -294,6 +294,9 @@ public final class RealisticGenerator extends ChunkGenerator {
     @Override
     public void generateNoise(WorldInfo worldInfo, Random random, int chunkX, int chunkZ, ChunkData chunkData) {
         WorldData data = data();
+        if (!data.containsChunk(chunkX, chunkZ)) {
+            return; // outside the map: the void
+        }
         int minY = chunkData.getMinHeight();
         List<Flat> flats = flats(worldInfo, data, chunkX, chunkZ);
         // The lakes and the rivers are already dug into the heights of world.bin and their water is in its layer water
@@ -361,6 +364,31 @@ public final class RealisticGenerator extends ChunkGenerator {
                             Math.min(surfaceAt(data, x, z + 1), surfaceAt(data, x, z - 1))) + 1;
                     for (int y = Math.max(top + 1, open); y <= top + water; y++) {
                         region.scheduleFluidUpdate(x, y, z);
+                    }
+                }
+            }
+        }
+    }
+
+    /**
+     * The edge of the map: the outermost ring of columns is a wall of barriers, one block thick, from the bottom to the top
+     * of the world. It is put once the chunk is decorated, so that nothing of the game (surface, caves, trees...) can
+     * change it. Outside the ring there is only the void.
+     */
+    private final class MapBorder extends BlockPopulator {
+
+        @Override
+        public void populate(WorldInfo worldInfo, Random random, int chunkX, int chunkZ, LimitedRegion region) {
+            WorldData data = data();
+            if (!data.containsChunk(chunkX, chunkZ)) {
+                return;
+            }
+            for (int x = chunkX * 16; x < chunkX * 16 + 16; x++) {
+                for (int z = chunkZ * 16; z < chunkZ * 16 + 16; z++) {
+                    if (data.onBorder(x, z)) {
+                        for (int y = worldInfo.getMinHeight(); y < worldInfo.getMaxHeight(); y++) {
+                            region.setType(x, y, z, Material.BARRIER);
+                        }
                     }
                 }
             }
@@ -535,6 +563,9 @@ public final class RealisticGenerator extends ChunkGenerator {
     @Override
     public void generateCaves(WorldInfo worldInfo, Random random, int chunkX, int chunkZ, ChunkData chunkData) {
         WorldData data = data();
+        if (!data.containsChunk(chunkX, chunkZ)) {
+            return; // outside the map: the void
+        }
         int limit = Math.max(chunkData.getMinHeight(), data.lowest() - CARVER_SEA_MARGIN);
         int maxY = chunkData.getMaxHeight();
         List<Area> villages = villageAreas(worldInfo, chunkX, chunkZ);
@@ -813,12 +844,12 @@ public final class RealisticGenerator extends ChunkGenerator {
     }
 
     /**
-     * The water of the lakes and the rivers is let flow ({@link WaterFlow}). The ruined portals of the game come out
+     * The water of the lakes and the rivers is let flow ({@link WaterFlow}), the edge of the map is walled ({@link MapBorder}). The ruined portals of the game come out
      * buried (README): ours are placed on the ground instead.
      */
     @Override
     public List<BlockPopulator> getDefaultPopulators(World world) {
-        return List.of(new WaterFlow(), plugin.ruinedPortals());
+        return List.of(new WaterFlow(), plugin.ruinedPortals(), new MapBorder());
     }
 
     @Override

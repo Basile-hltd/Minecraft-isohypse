@@ -23,13 +23,22 @@ import java.util.Locale;
  * @param riverClimb the most blocks a river climbs over its level to get out of a hollow (the digger cuts the pass)
  * @param riverWidth width, in blocks, of a river with one source (it grows at each confluence); 0 for no river
  * @param riverLakeSnap a river that comes within this many blocks of a lake connects to it and ends there; 0 for none
+ * @param riverDepth depth, in blocks, of the water of a river in the middle of its channel (1 at its edges), at least 1
+ * @param riverBankReach how far from a river, in blocks, the ground is lowered to its banks; 0 for no bank
+ * @param riverBankSlope blocks a bank rises per block from the river (1 is the usual slope; less is gentler), more than 0
+ * @param mushroomIslandSize width, in blocks, of a mushroom island; one is raised wherever the sea is at least that far
+ * from any land in every direction; 0 for none, else at least 64
+ * @param mushroomIslandSpacing the least distance, in blocks, between the middles of two mushroom islands
+ * @param mushroomIslandHeight blocks over the sea level of the highest point of a mushroom island
  */
 record TerrainSettings(int oceanDepth, int beachDepth, int beachHeight, int beachInlandDistance, int oceanBlur, int landBlur, double warmOceanShare,
                        double normalOceanShare, double warmLandShare, double normalLandShare, int lakeMinSize, int lakeSmoothing,
-                       int riverClimb, int riverWidth, int riverLakeSnap) {
+                       int riverClimb, int riverWidth, int riverLakeSnap,
+                       int riverDepth, int riverBankReach, double riverBankSlope,
+                       int mushroomIslandSize, int mushroomIslandSpacing, int mushroomIslandHeight) {
 
     static final TerrainSettings DEFAULTS = new TerrainSettings(30, 3, 5, 20, 150, 50,
-            1.0 / 3, 1.0 / 3, 0.35, 0.45, 50, 2, 3, 3, 10);
+            1.0 / 3, 1.0 / 3, 0.35, 0.45, 50, 2, 3, 3, 10, 3, 16, 1.0, 300, 3000, 14);
 
     TerrainSettings {
         require(oceanDepth >= 0, "ocean_depth must be 0 or more");
@@ -39,6 +48,13 @@ record TerrainSettings(int oceanDepth, int beachDepth, int beachHeight, int beac
         require(lakeMinSize >= 0 && lakeSmoothing >= 0, "lake_min_size and lake_smoothing must be 0 or more");
         require(riverClimb >= 0 && riverWidth >= 0, "river_climb and river_width must be 0 or more");
         require(riverLakeSnap >= 0, "river_lake_snap must be 0 or more");
+        require(riverDepth >= 1, "river_depth must be 1 or more");
+        require(riverBankReach >= 0, "river_bank_reach must be 0 or more");
+        require(riverBankSlope > 0, "river_bank_slope must be more than 0");
+        require(mushroomIslandSize == 0 || mushroomIslandSize >= 64, "mushroom_island_size must be 0 or at least 64");
+        require(mushroomIslandSpacing >= 2 * mushroomIslandSize,
+                "mushroom_island_spacing must be at least twice mushroom_island_size");
+        require(mushroomIslandHeight >= 1, "mushroom_island_height must be 1 or more");
         require(warmOceanShare >= 0 && normalOceanShare >= 0 && warmOceanShare + normalOceanShare <= 1,
                 "warm_ocean_share and normal_ocean_share: 0 or more, 1 at most together");
         require(warmLandShare >= 0 && normalLandShare >= 0 && warmLandShare + normalLandShare <= 1,
@@ -70,7 +86,11 @@ record TerrainSettings(int oceanDepth, int beachDepth, int beachHeight, int beac
                 + line("normal_ocean_share", normalOceanShare) + line("warm_land_share", warmLandShare)
                 + line("normal_land_share", normalLandShare) + line("lake_min_size", lakeMinSize)
                 + line("lake_smoothing", lakeSmoothing) + line("river_climb", riverClimb)
-                + line("river_width", riverWidth) + lineLast("river_lake_snap", riverLakeSnap) + "  }";
+                + line("river_width", riverWidth) + line("river_lake_snap", riverLakeSnap)
+                + line("river_depth", riverDepth) + line("river_bank_reach", riverBankReach)
+                + line("river_bank_slope", riverBankSlope) + line("mushroom_island_size", mushroomIslandSize)
+                + line("mushroom_island_spacing", mushroomIslandSpacing)
+                + lineLast("mushroom_island_height", mushroomIslandHeight) + "  }";
     }
 
     static String line(String key, Number value) {

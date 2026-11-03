@@ -62,6 +62,7 @@ ZONE_COLORS = {
     "beach": 0xF0E0A0, "warm": 0xE8A23C, "normal": 0x6AA84F, "cold": 0xDDE6EE,
     "lake": 0xE020E0,   # magenta, to be seen over the sea and the land while the lakes are checked
     "river": 0xFF8000,  # orange, same reason
+    "mushroom_island": 0xC03070,   # the mushroom islands, to be seen over the sea
 }
 
 # The colours of the biomes, by name (those of the former maps).
@@ -74,6 +75,7 @@ BIOME_COLORS = {
     "frozen_river": 0xA0A0FF,
     "grove": 0xC3D6CC, "ice_spikes": 0xB4DCDC, "jagged_peaks": 0xEEF2F6, "jungle": 0x537B09,
     "lukewarm_ocean": 0x2F8FC4, "lush_caves": 0x9ED82A, "mangrove_swamp": 0x67352B, "meadow": 0x83BB6D,
+    "mushroom_fields": 0xFF00FF,
     "ocean": 0x1F4FA3, "old_growth_birch_forest": 0x589C6C, "old_growth_pine_taiga": 0x596651,
     "old_growth_spruce_taiga": 0x818E79, "pale_garden": 0xB9C1B0, "plains": 0x8DB360, "savanna": 0xBDB25F,
     "savanna_plateau": 0xA79D64, "snowy_plains": 0xF2F6FF, "snowy_slopes": 0xDDE6EE, "snowy_taiga": 0x31554A,

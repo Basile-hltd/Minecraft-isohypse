@@ -2,11 +2,17 @@
 realistic: 
   latitude: 46.160917   # degrés, de -90 (sud) à 90 (nord)
   longitude: 6.923270   # degrés, de -180 (ouest) à 180 (est)
-  size: 50000          # côté en mètres de la zone réelle récupérée ; la carte finale est mise à l'échelle (voir README)
+  size: 100000          # côté en mètres de la zone réelle récupérée ; la carte finale est mise à l'échelle (voir README)
 
   # Mise à l'échelle des altitudes réelles en hauteurs de blocs (heightmap.bin) : un seul facteur, le point le plus haut au plafond. Les changer refait la height map et retélécharge les tuiles.
   scale:
     ocean_depth: 30          # blocs sous le niveau de la mer où est mise la mer plate (0 m réel) ; sans mer dans la zone, le point le plus bas
+
+  # Slimes des marais : Paper ne les laisse apparaître en surface que de y=50 à 70, autour du niveau de la mer ; ici la fenêtre est déplacée
+  # (réglage de Paper changé au démarrage, rien n'est écrit dans ses fichiers).
+  slime:
+    swamp_min_y: 50            # y le plus bas où un slime apparaît dans un marais
+    swamp_max_y: 0             # y le plus haut ; 0 : le haut du monde
 
   # Carte intermédiaire (zones) : zones tirées de la seule altitude. Prises en compte à chaque démarrage (world.bin est refait, rien n'est retéléchargé :
   # relancer le serveur, puis Recharger dans le viewer).
@@ -25,6 +31,12 @@ realistic:
     river_climb: 3             # une rivière part d'un lac et descend le relief ; elle passe un col jusqu'à tant de blocs au-dessus de son niveau (le creuseur le coupe), sinon elle s'arrête
     river_width: 10             # largeur (blocs) d'une rivière à une source, elle grandit à chaque confluence ; 0 : aucune rivière
     river_lake_snap: 20        # une rivière qui passe à tant de blocs ou moins d'un lac s'y connecte et s'arrête là ; 0 : aucun
+    river_depth: 3             # profondeur (blocs) de l'eau au milieu du lit d'une rivière (1 sur les bords du lit) ; 1 au minimum
+    river_bank_reach: 16       # distance (blocs) autour d'une rivière sur laquelle le sol est abaissé en berge, avec un fondu jusqu'au terrain ; 0 : pas de berge
+    river_bank_slope: 1.0      # blocs dont la berge monte par bloc depuis la rivière (1 : pente normale, moins : plus douce) ; plus que 0
+    mushroom_island_size: 300     # une île champignon de tant de blocs de large est posée partout où la mer est à au moins tant de blocs de toute terre dans chaque direction ; 0 : aucune, sinon 64 au minimum
+    mushroom_island_spacing: 3000 # distance minimale (blocs) entre les milieux de deux îles champignon ; au moins le double de la taille
+    mushroom_island_height: 14    # hauteur (blocs) du point le plus haut d'une île champignon au-dessus du niveau de la mer
 
 # Monde : hauteur maximale de l'overworld (le sol reste à y=-64). Arrondie à la valeur la plus proche acceptée par le jeu :
 # un multiple de 16 de 128 à 2032 ; 320 est la valeur de Minecraft (rien n'est changé). Ne s'applique qu'à un monde qui

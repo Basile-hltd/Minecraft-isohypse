@@ -28,13 +28,18 @@ final class TempLayout implements AutoCloseable {
     record Zone(String name, String range) {}
 
     /** The layout of a height map with these settings. */
-    static TempLayout build(HeightMapData data, int seaLevel, TerrainSettings settings, File dir, Logger logger)
+    static TempLayout build(HeightMapData data, int seaLevel, TerrainSettings settings, long seed, File dir, Logger logger)
             throws IOException {
         int beachStart = settings.beachStart(seaLevel);
         int landStart = settings.landStart(seaLevel);
         // The sea zones: the distance of every sea column to the edge of the sea (what is not sea), filtered widely.
         HeightSmoothing seaSmoothing;
+        IslandMask islands;
         try (ShoreDistance shore = new ShoreDistance(data, v -> v >= beachStart, 0, dir, logger, "distance au bord de la mer")) {
+            // The mushroom islands, where the sea is wide open: the same distance, to the land, tells where.
+            islands = new IslandMask(data, shore::quarterBlocks, settings.mushroomIslandSize(),
+                    settings.mushroomIslandSpacing(), settings.mushroomIslandHeight(), seaLevel, seed, logger,
+                    "îles champignon");
             seaSmoothing = new HeightSmoothing(data, shore::quarterBlocks,
                     (column, row) -> data.valueAt(column, row) < beachStart, settings.oceanBlur(), dir, logger, "flou de la mer");
         }
@@ -57,7 +62,7 @@ final class TempLayout implements AutoCloseable {
             rivers = new RiverMask(data, lakes, settings.riverClimb(), settings.riverWidth(), settings.riverLakeSnap(),
                     seaLevel, dir, logger, "rivières");
             return new TempLayout(seaLevel, data.highest(), seaSmoothing, landSmoothing, seaDistance, lakes, rivers,
-                    settings);
+                    islands, settings);
         } catch (IOException | RuntimeException | Error e) {
             seaSmoothing.close();
             if (rivers != null) {
@@ -92,7 +97,9 @@ final class TempLayout implements AutoCloseable {
     private final Zone cold;
     private final Zone lake;
     private final Zone river;
+    private final Zone mushroom;
 
+    private final IslandMask islands;
     private final ShoreDistance seaDistance;
     private final HeightSmoothing seaSmoothing;
     private final HeightSmoothing landSmoothing;
@@ -112,9 +119,11 @@ final class TempLayout implements AutoCloseable {
      * @param seaDistance which columns are far enough from the nearest sea, to turn the inland beach to warm land
      * @param lakes the flats of the height map, which are lakes whatever the zone under them
      * @param rivers the courses from the lakes down to a lower lake or the sea, over the land zones (a lake is over them)
+     * @param islands the mushroom islands raised in the open sea, a zone of their own over the sea
      */
     TempLayout(int seaLevel, int highest, HeightSmoothing seaSmoothing, HeightSmoothing landSmoothing,
-               ShoreDistance seaDistance, LakeMask lakes, RiverMask rivers, TerrainSettings settings) {
+               ShoreDistance seaDistance, LakeMask lakes, RiverMask rivers, IslandMask islands, TerrainSettings settings) {
+        this.islands = islands;
         this.seaDistance = seaDistance;
         this.lakes = lakes;
         this.rivers = rivers;
@@ -139,6 +148,8 @@ final class TempLayout implements AutoCloseable {
         this.cold = new Zone("cold", normalTop + " à " + highest);
         this.lake = new Zone("lake", "plat d'au moins " + settings.lakeMinSize() + " x " + settings.lakeMinSize() + " blocs");
         this.river = new Zone("river", "descend d'un lac, remonte au plus de " + settings.riverClimb() + " blocs");
+        this.mushroom = new Zone("mushroom_island", "île de " + settings.mushroomIslandSize()
+                + " blocs, au moins " + settings.mushroomIslandSize() + " blocs de mer autour de son milieu");
     }
 
     /**
@@ -181,6 +192,9 @@ final class TempLayout implements AutoCloseable {
         if (rivers.contains(x, z)) {
             return river;
         }
+        if (islands.contains(x, z)) {
+            return mushroom;
+        }
         if (top < beachStart) { // the sea
             return switch (oceanTypeAt(x, z)) {
                 case WARM -> warmOcean;
@@ -219,8 +233,16 @@ final class TempLayout implements AutoCloseable {
         return rivers;
     }
 
-    /** Every zone, bottom to top, then the lakes and the rivers (they come over the others, the lakes over the rivers). */
+    /** The mushroom islands, to raise them from the sea floor and give them their biome. */
+    IslandMask islands() {
+        return islands;
+    }
+
+    /**
+     * Every zone, bottom to top, then the lakes and the rivers (they come over the others, the lakes over the rivers),
+     * then the mushroom islands (in the sea, so they are never under a lake or a river).
+     */
     List<Zone> all() {
-        return List.of(deepSea, ocean, warmOcean, beach, warm, normal, cold, lake, river);
+        return List.of(deepSea, ocean, warmOcean, beach, warm, normal, cold, lake, river, mushroom);
     }
 }

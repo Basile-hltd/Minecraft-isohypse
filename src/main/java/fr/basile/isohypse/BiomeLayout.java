@@ -97,6 +97,8 @@ final class BiomeLayout {
     private static final Entry STONY_SHORE = new Entry(Biome.STONY_SHORE);
     /** The biome of the rivers, frozen in the cold zone of the intermediate map. */
     private static final Entry RIVER = new Entry(Biome.RIVER);
+    /** The biome of the mushroom islands of the intermediate map, whole island, shore and sea floor around it included. */
+    private static final Entry MUSHROOM_FIELDS = new Entry(Biome.MUSHROOM_FIELDS);
     private static final Entry FROZEN_RIVER = new Entry(Biome.FROZEN_RIVER);
 
     /** Entries with weights, drawn from by a number between 0 and 1. */
@@ -311,6 +313,9 @@ final class BiomeLayout {
 
     /** The surface biome of the column (x, z) whose top block is at Y {@code top}. */
     Entry at(int x, int z, int top) {
+        if (temp.islands().contains(x, z)) {
+            return MUSHROOM_FIELDS;
+        }
         if (top < TerrainSettings.DEFAULTS.beachStart(seaLevel)) {
             double coast = climate(temperature, x, z); // a smooth noise, from -1 to 1
             List<Entry> pool = (top <= seaLevel - DEEP_OCEAN ? DEEP_POOLS : SHALLOW_POOLS).get(temp.oceanTypeAt(x, z));
@@ -384,7 +389,7 @@ final class BiomeLayout {
 
     /** Every surface entry {@link #at(int, int, int)} can return, bottom to top, one per biome. */
     static List<Entry> allEntries() {
-        return distinct(List.of(DEEP_OCEANS, OCEANS, List.of(BEACH, STONY_SHORE), List.of(RIVER, FROZEN_RIVER), LANDS));
+        return distinct(List.of(DEEP_OCEANS, OCEANS, List.of(BEACH, STONY_SHORE), List.of(RIVER, FROZEN_RIVER), List.of(MUSHROOM_FIELDS), LANDS));
     }
 
     /** Every underground entry {@link #at(int, int, int, int)} can return, one per biome. */
@@ -401,7 +406,9 @@ final class BiomeLayout {
     static List<Biome> allBiomes() {
         List<Entry> all = new ArrayList<>(allEntries());
         all.addAll(caveEntries());
-        return all.stream().map(Entry::biome).toList();
+        List<Biome> biomes = new ArrayList<>(all.stream().map(Entry::biome).toList());
+        biomes.add(Biome.THE_VOID); // outside the map
+        return biomes;
     }
 
     private static List<Entry> distinct(List<List<Entry>> bands) {

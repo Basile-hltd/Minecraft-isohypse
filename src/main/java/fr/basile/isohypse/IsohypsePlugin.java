@@ -3,6 +3,7 @@ package fr.basile.isohypse;
 import org.bukkit.World;
 import org.bukkit.command.Command;
 import org.bukkit.command.CommandSender;
+import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.Listener;
 import org.bukkit.event.player.PlayerJoinEvent;
@@ -159,6 +160,8 @@ public final class IsohypsePlugin extends JavaPlugin implements Listener {
             HeightScale.buildWorld(getDataFolder(), terrainSettings(), event.getWorld().getSeed(), getLogger());
             worldData = WorldData.open(getDataFolder(), HeightScale.SEA_LEVEL);
             ruinedPortals.load();
+            SlimeSpawn.apply(event.getWorld(), getConfig().getDouble("realistic.slime.swamp_min_y", 50),
+                    getConfig().getDouble("realistic.slime.swamp_max_y", 0), getLogger());
         } catch (Exception e) {
             getLogger().log(Level.SEVERE, "Realistic: world.bin cannot be made, stopping the server", e);
             getServer().shutdown();
@@ -215,7 +218,13 @@ public final class IsohypsePlugin extends JavaPlugin implements Listener {
                 c.getInt("realistic.temp.lake_smoothing", d.lakeSmoothing()),
                 c.getInt("realistic.temp.river_climb", d.riverClimb()),
                 c.getInt("realistic.temp.river_width", d.riverWidth()),
-                c.getInt("realistic.temp.river_lake_snap", d.riverLakeSnap()));
+                c.getInt("realistic.temp.river_lake_snap", d.riverLakeSnap()),
+                c.getInt("realistic.temp.river_depth", d.riverDepth()),
+                c.getInt("realistic.temp.river_bank_reach", d.riverBankReach()),
+                c.getDouble("realistic.temp.river_bank_slope", d.riverBankSlope()),
+                c.getInt("realistic.temp.mushroom_island_size", d.mushroomIslandSize()),
+                c.getInt("realistic.temp.mushroom_island_spacing", d.mushroomIslandSpacing()),
+                c.getInt("realistic.temp.mushroom_island_height", d.mushroomIslandHeight()));
     }
 
     /** Prints the real-world point (latitude, longitude) that the Realistic style puts at x=0, z=0. */
@@ -259,7 +268,7 @@ public final class IsohypsePlugin extends JavaPlugin implements Listener {
         return style;
     }
 
-    /** /isohypse version, for the operators (isohypse.admin); registered here because a paper-plugin.yml has no commands. */
+    /** /isohypse version and /isohypse isSlime, for the operators (isohypse.admin); registered here because a paper-plugin.yml has no commands. */
     private void registerCommand() {
         try {
             getServer().getPluginManager().addPermission(new Permission("isohypse.admin",
@@ -267,15 +276,30 @@ public final class IsohypsePlugin extends JavaPlugin implements Listener {
         } catch (IllegalArgumentException alreadyThere) {
             // reloaded: the permission is already registered
         }
-        Command command = new Command("isohypse", "Isohypse plugin commands", "/isohypse version", List.of()) {
+        Command command = new Command("isohypse", "Isohypse plugin commands", "/isohypse <version|isSlime>", List.of()) {
             @Override
             public boolean execute(CommandSender sender, String label, String[] args) {
                 if (args.length == 1 && args[0].equalsIgnoreCase("version")) {
                     sender.sendMessage("isohypse " + getPluginMeta().getVersion());
                     return true;
                 }
+                if (args.length == 1 && args[0].equalsIgnoreCase("isSlime")) {
+                    if (sender instanceof Player player) {
+                        org.bukkit.Chunk chunk = player.getLocation().getChunk();
+                        sender.sendMessage("Chunk (" + chunk.getX() + ", " + chunk.getZ() + ") : "
+                                + (chunk.isSlimeChunk() ? "chunk à slimes" : "pas un chunk à slimes"));
+                    } else {
+                        sender.sendMessage("isSlime : à lancer par un joueur (il utilise le chunk où il se trouve)");
+                    }
+                    return true;
+                }
                 sender.sendMessage(getUsage());
                 return true;
+            }
+
+            @Override
+            public List<String> tabComplete(CommandSender sender, String alias, String[] args) {
+                return args.length == 1 ? List.of("version", "isSlime") : List.of();
             }
         };
         command.setPermission("isohypse.admin");
