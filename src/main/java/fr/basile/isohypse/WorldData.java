@@ -20,7 +20,8 @@ import java.util.regex.Pattern;
 /**
  * What the plugin asks of {@code world.bin} when the game wants a height or a biome: the file ({@link WorldFile}) is
  * memory-mapped, so it stays on the disk and nothing of the size of the map is in the Java heap; a value is read
- * where it is. The map repeats endlessly outside, as it is.
+ * where it is. Outside the map there is nothing: it is the void ({@link #contains}); a read there gives the value of the
+ * nearest column of the map, except for the biome, which is the void's.
  *
  * <p>A column (x, z) of the world is the column {@code x + width / 2} of the map (north, row 0, towards negative z), and
  * the cell of a biome layer is one per 4 x 4 blocks; the width and the height are multiples of 32, so the cells and the
@@ -110,38 +111,62 @@ final class WorldData {
                 lakeZone, riverZone);
     }
 
+    /** Whether the column (x, z) is on the map; everything outside it is the void. */
+    boolean contains(int x, int z) {
+        int column = x + width / 2;
+        int row = z + height / 2;
+        return column >= 0 && column < width && row >= 0 && row < height;
+    }
+
+    /** Whether the chunk is on the map (its sides are on the limits of the map, whose size is a multiple of 32). */
+    boolean containsChunk(int chunkX, int chunkZ) {
+        return contains(chunkX * 16, chunkZ * 16);
+    }
+
+    /** Whether the column (x, z) is on the outermost ring of the map, where the barrier is. */
+    boolean onBorder(int x, int z) {
+        int column = x + width / 2;
+        int row = z + height / 2;
+        return contains(x, z) && (column == 0 || column == width - 1 || row == 0 || row == height - 1);
+    }
+
+    /** The column of the map nearest to the world column {@code x}. */
+    private long columnOf(int x) {
+        return Math.clamp(x + (long) width / 2, 0, width - 1);
+    }
+
+    /** The row of the map nearest to the world row {@code z}. */
+    private long rowOf(int z) {
+        return Math.clamp(z + (long) height / 2, 0, height - 1);
+    }
+
     /** Y of the top block of the column (x, z). */
     int heightAt(int x, int z) {
-        long column = Math.floorMod(x + width / 2, width);
-        long row = Math.floorMod(z + height / 2, height);
-        return file.get(SHORT, heights.offset() + 2 * (row * width + column));
+        return file.get(SHORT, heights.offset() + 2 * (rowOf(z) * width + columnOf(x)));
     }
 
     /** The blocks of water of a lake or a river over the top block of the column (x, z), 0 for none. */
     int waterAt(int x, int z) {
-        long column = Math.floorMod(x + width / 2, width);
-        long row = Math.floorMod(z + height / 2, height);
-        return file.get(ValueLayout.JAVA_BYTE, water.offset() + row * width + column) & 0xFF;
+        if (!contains(x, z)) {
+            return 0;
+        }
+        return file.get(ValueLayout.JAVA_BYTE, water.offset() + rowOf(z) * width + columnOf(x)) & 0xFF;
     }
 
     /** Whether the column (x, z) is a lake (the zone "lake" of the intermediate map): a flat, whose height is the water level. */
     boolean lakeAt(int x, int z) {
-        if (lakeZone < 0) {
+        if (lakeZone < 0 || !contains(x, z)) {
             return false;
         }
-        long column = Math.floorMod(x + width / 2, width);
-        long row = Math.floorMod(z + height / 2, height);
-        return (file.get(ValueLayout.JAVA_BYTE, zones.offset() + row * zones.columns() + column) & 0xFF) == lakeZone;
+        return (file.get(ValueLayout.JAVA_BYTE, zones.offset() + rowOf(z) * zones.columns() + columnOf(x)) & 0xFF) == lakeZone;
     }
 
     /** Whether the column (x, z) is a river (the zone "river" of the intermediate map; a lake is over a river). */
     boolean riverAt(int x, int z) {
-        if (riverZone < 0) {
+        if (riverZone < 0 || !contains(x, z)) {
             return false;
         }
-        long column = Math.floorMod(x + width / 2, width);
-        long row = Math.floorMod(z + height / 2, height);
-        return (file.get(ValueLayout.JAVA_BYTE, zones.offset() + row * zones.columns() + column) & 0xFF) == riverZone;
+        return (file.get(ValueLayout.JAVA_BYTE, zones.offset() + rowOf(z) * zones.columns() + columnOf(x)) & 0xFF) == riverZone;
     }
 
     /** Y of the lowest column of the map. */
@@ -155,6 +180,9 @@ final class WorldData {
      * layers instead of the noises.
      */
     Biome biomeAt(int x, int y, int z) {
+        if (!contains(x, z)) {
+            return Biome.THE_VOID;
+        }
         if (y < heightAt(x, z) - BiomeLayout.CAVE_DEPTH && y < seaLevel - BiomeLayout.CAVE_SEA_MARGIN) {
             Biome cave = biome(y < BiomeLayout.DEEP_DARK_Y ? deepCaves : caves, x, z);
             if (cave != null) {
@@ -165,8 +193,8 @@ final class WorldData {
     }
 
     private Biome biome(WorldFile.Layer layer, int x, int z) {
-        long column = Math.floorMod(x + width / 2, width) / layer.step();
-        long row = Math.floorMod(z + height / 2, height) / layer.step();
+        long column = columnOf(x) / layer.step();
+        long row = rowOf(z) / layer.step();
         int index = file.get(ValueLayout.JAVA_BYTE, layer.offset() + row * layer.columns() + column) & 0xFF;
         return index < biomes.length ? biomes[index] : null;
     }

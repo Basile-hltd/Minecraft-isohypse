@@ -8,6 +8,12 @@ realistic:
   scale:
     ocean_depth: 30          # blocs sous le niveau de la mer où est mise la mer plate (0 m réel) ; sans mer dans la zone, le point le plus bas
 
+  # Slimes des marais : Paper ne les laisse apparaître en surface que de y=50 à 70, autour du niveau de la mer ; ici la fenêtre est déplacée
+  # (réglage de Paper changé au démarrage, rien n'est écrit dans ses fichiers).
+  slime:
+    swamp_min_y: 50            # y le plus bas où un slime apparaît dans un marais
+    swamp_max_y: 0             # y le plus haut ; 0 : le haut du monde
+
   # Carte intermédiaire (zones) : zones tirées de la seule altitude. Prises en compte à chaque démarrage (world.bin est refait, rien n'est retéléchargé :
   # relancer le serveur, puis Recharger dans le viewer).
   temp:

@@ -406,7 +406,9 @@ final class BiomeLayout {
     static List<Biome> allBiomes() {
         List<Entry> all = new ArrayList<>(allEntries());
         all.addAll(caveEntries());
-        return all.stream().map(Entry::biome).toList();
+        List<Biome> biomes = new ArrayList<>(all.stream().map(Entry::biome).toList());
+        biomes.add(Biome.THE_VOID); // outside the map
+        return biomes;
     }
 
     private static List<Entry> distinct(List<List<Entry>> bands) {

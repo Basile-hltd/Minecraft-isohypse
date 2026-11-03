@@ -106,7 +106,9 @@ final class IslandMask {
         for (int i = candidates.length - 1; i >= 0; i--) {
             int column = (int) (candidates[i] >> 21 & mask);
             int row = (int) (candidates[i] & mask);
-            if (tooClose(column, row)) {
+            // the map does not repeat in the game: an island at the edge would show up cut, and again at the opposite edge
+            if (column < reach + 1 || column >= width - reach - 1 || row < reach + 1 || row >= height - reach - 1
+                    || tooClose(column, row)) {
                 continue;
             }
             long mixed = seed ^ column * 0x9E3779B97F4A7C15L ^ row * 0xC2B2AE3D27D4EB4FL;
